@@ -1,0 +1,7 @@
+.godot/
+bin/
+obj/
+out/
+*.user
+.vs/
+.vscode/
