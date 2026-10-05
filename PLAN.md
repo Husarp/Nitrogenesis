@@ -164,15 +164,20 @@ Nitrogenesis/
   - **Car-to-car:** none.
 - **Constants** (starting values; tuned in M1, final values recorded here):
 
-  | Constant | Start value | Hard limits (settings) |
-  |---|---|---|
-  | Car size | 3.0 × 1.8 cells (half-width 0.9) | fixed |
-  | Max speed (road) | 18 cells/s | 5…60 |
-  | Acceleration | 14 cells/s² | 2…60 |
-  | Brake | 30 cells/s² | — |
-  | Reverse cap | 4 cells/s | — |
-  | Turn rate at full speed | 200 °/s | 60…400 |
-  | Grass top speed / grip | 45 % / 0.45 | 10…100 % |
+  | Constant | Start value | Final (M1) | Hard limits (settings) |
+  |---|---|---|---|
+  | Car size | 3.0 × 1.8 cells (half-width 0.9) | same | fixed |
+  | Max speed (road) | 18 cells/s | 18 cells/s | 5…60 |
+  | Acceleration | 14 cells/s² | 14 cells/s² | 2…60 |
+  | Brake | 30 cells/s² | 30 cells/s² | — |
+  | Reverse cap | 4 cells/s | 4 cells/s | — |
+  | Turn rate at full speed | 200 °/s | 200 °/s | 60…400 |
+  | Grass top speed / grip | 45 % / 0.45 | 45 % / 0.45 | 10…100 % |
+
+  M1 result (**provisional** until M5): the `learn-suite` passes on the 7 bundled tracks, including a labyrinth
+  and an obstacle field that random search cannot solve (control cases), with the start values (and the
+  §3.4/§3.7 defaults) unchanged, so nothing was retuned; details in NOTES.md. The tuning target below (20–40 s on
+  generated tracks) can only be checked in M5, so the "Final (M1)" column may still change then.
 
   Tuned so the reference driver takes 20–40 s on generated M tracks.
 

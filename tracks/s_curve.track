@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "S-curve",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 20.5,
+    "y": 72.5,
+    "angleDeg": 0
+  },
+  "cells": "7Z3BcsMgDERDxv//zT0005qCHclIjSW9dyYJuyCbYCE/nwAAAAAAAAAAAAAAb2gdpcVXs+Bb72NHJQcG8TsLaqh/HFDAgTP5BQw4Vf9yoOrgp58CAvWZp4BQflYDxPJzGqCQn9GAmfzfpW96AyYa+8V/bgNGgf1trk0b5JavbpJH/myN02at0spfaRdPv1DWxIBK8nMa8FfT6aRWNc4nP58Baj3JDNCrGQ0oJT+VAeMmt9+nQgy/68eyyM9iwPV5nCICVkRkMGBJwmBAneDPcQlYHsDgEbDc/dgRYDB9I0eAyeAFjgCTrseNAKORi2qAWb+DRoBZt2NOAMNRi2iAaZ8DRoDtkN1yArRzLEfM+Ouu6FFpN49Y7wnQRLxL3vTL43C+BB7o2XbsDVBlsdhMV9cIONKz9fz8qkq+0WB5ToAjPdtgwCX57XY3VJn8Qf/LgE8Mv+MioLnqt+znf3yvsX6/cfKZV/b6b/mXQpaRuS1fAD2v0x73FdH1/2M5zA6LgKbQ3y2AZDn85us073WlZgGsWTHfNAIuyhd54L+tEON/JfsK7Cuxr8i+Ms8VeK7Ec0WeK5NXQF4JeUXklZFXSF4pecXklXOugHMlnCviXBnnCjlXyrlizpVTV4C6EtQVoa4MdYWoK0VdMerKUVeQupLUFaWuLHWFqStNXXHqyvNeAd4rwXtFAAAAAAAAAAAAAOz5Ag==",
+  "meta": {}
+}

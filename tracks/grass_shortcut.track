@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "Grass shortcut",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 22.5,
+    "y": 12.5,
+    "angleDeg": 0
+  },
+  "cells": "7Z1BjsRACAObKP9/8xxyiTTnqAwFH9i1hyTdYMx1bWxs2KOwMGOP4KBKTcDzDxwsYAZY8C8KOPznRBBQWvhgCqTgp1IgBj+UAkH4EQKS8CMM2AmoQALKdP7DUwA++vMpkEYA9BpMSwFR4eWIGbCnQNJbgCw/WQlI+hLC5UdlCti/hIGHIfTkZSMg8zxMnrxdBGTeCeGblygFYssC8M3bkgL2skB6ZQitPAkISK+OwpXH8c9AgwI5XHmenQL2AnmfHgnaeRlLQJ8+Idx5G/oMtGoVw53XiSlgbxV3VAugyoNhBDQVjJDKk1EENBVNwcqjOSlgF0311s2hyrsRBLSXTpLKywEEtJcPw8rb7ikwQUEOK69bp4BdQf7lEIHJeaArAZ9OUZjwNyXgw0EaHf7a31+MX/78y9//7u+//PznPv/L73/u+7+8/uOu/8nrv/L6v7v/I+//ufu/8v6/W/8h1//I9V9u/Z9c/+nW/8r13279v3z+Qz7/457/ks//uec/5fO/7vlv+fy/3P/B7f8h939x+//I/Z/c/l9y/ze3/5/c/1Hu/+n2f5X7/7r9n+X+327/d7n/v3z/g3b/R8iPX+Xd/1Ol3v8k3//1/Ln7Hab9b3/gWfzE8rc7Bz+x/O/k4EfWX8bgp/a/huDH9v9G4Af3PyfgJxeg8/jBi37C9x+969Hnv6KrPBUQcxwo+sGHObg2Njag+AE=",
+  "meta": {}
+}

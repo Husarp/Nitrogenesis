@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "Obstacle field",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 20.5,
+    "y": 36.5,
+    "angleDeg": 0
+  },
+  "cells": "7Z3RboQgEEUF/f9vbtON6baCg0CrM/ec1y1JzxU37gBjzgAAAAAAAAAAACBDKmN8fOuY93HzzX34DyexD19KrOv+Z+u6NPJfY16MZlBVd+J/SGKivS//7wyu6D/DZZb/HkGzf/f/tb5xz5jzCKboO/VvTCCN+d/9yXACtr5jfzuABn3P/mYC4f2/EpD2PwugRd+9/0kAGv71AET8qwnI+C/q/uUAhPyLASj5dwcQxz9J+5cCkPJf+iZAHP+lNAGSlH/qqf/cXeWZVxnsuQMi+ffdAbEqw1fr/6H8K09BfQn49E8X1/9i+Vd/CQ6ttz5hzIR6oGv/1gim7Bd46uYNYf/mL3L1AAL7Nz3OhfYnADuA2P52AMH9s/oEyEyAJO2f8df2NwJQ9+cG4AbAH3/88ccff/zx5/kPf6Y/lx9/6n/Uf6n/s/7D+h/rv+iz/4P9Pyr7v5LzDYAjJ+HcbwAdOgb1YvtEcAP4rr4J+B8v/w97Af+j/rbJ+Jcu/2b4hz4A9Vs/tr85+8v+OcwBUPPyb1IHYI/6W+gD0FnZP2n7lw//KvlnZf9K+wsV/1r/FxH/av8fDf8k7X/W/0vA/7QBXnz/8wPP4f2N/o/B/a0OqLF//9kNcEP//m/pgDzo/+AG0I0dsFvqfw79mzug2/Vfl1Xe9kVOs/7vzP/6KxCM9R9H/p2vwDhf/3u8/4R3oKQYL4D5o7fgPNw/AwAAAAAAAAAAwIEP",
+  "meta": {}
+}

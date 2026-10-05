@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "Wrong turn",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 20.5,
+    "y": 72.5,
+    "angleDeg": 0
+  },
+  "cells": "7dxZCoMwFEDR5uH+11xakNoPQclszllA9UY7QZ4RAAAA/9Jklo4vvASfF3tNpuACzBe/L0Gpqz9rf1r58pe6AfTr169ff5ufbflH01+rv8X/rNyj6devX79+/fr169evX79+/fr169evX79+/fr169evX79+/fr169ffsz9l7t6duz9+/bFkf+SOL8zeH5nTG9P3D3a+a/TX3ZFZaS4rY7/qnfmuwvtfh+g/nkfL+a76C3Desh0czqP1BvfKC3Ct/7sEfea7Kt8BN/pTn/mGQfo3/fqf+P5Pt97/T/v8j+v9j/z+P+85+f5vPd8/ysMaoscjDkZ5XkUAAAAAAAAAAAAAAAAAAAAADOIN",
+  "meta": {}
+}

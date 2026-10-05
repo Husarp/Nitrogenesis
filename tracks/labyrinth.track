@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "Labyrinth",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 13.5,
+    "y": 72.5,
+    "angleDeg": 0
+  },
+  "cells": "7d3bbsIwDIBhGvH+zzwxpDGBaJrEjk+/7yaq0C+dcnRKawRBWMfhvDxd/DPclreBfxO8Yeny9P23Rwj6ZcvDv4MvdsPS5eHHjx8/fvz48eNP6D92hyf/YRNe/L/z5d3xqgAH/ptF4PfhN+L/3V9Vf/XnX9vvp/3/d/2X6H0+eX2r7Pcz/utdL12et/E/fvz48TvwCwX+kH6tATZ+/Pin8yWi+geWf6v7T/OlYvpH8r/O8+X89f9j6wttMV8ypt9ufy7afAE/fvz4l76vt567cb66399bz987X9/ufxs/flx/Nb8grv98P+/qABd/SP/751//Luqv/vzx527/u/7k/X/fn3v8d8mfePyPHz/+4P6l9VYzv9Ti9+J6s0f/4PaHYT6zzn7RQAVIbUC58o/vf1b1i+0/OvPvroDZfO4s//+B/QI1MJ/Pb97+N9t8fvP+f3n8t5bPbz/+Y/8PP378+C9/n0R/6eS82LhfaLzg5LzgsD/Z+wIm/KnOC+Mf82d7X0CU54//KNz+O/KL9/9j+QH5xn8B/YbnefHjx48fv8z7B2v6J7bHvfnH4/6K6xWQ0/+oAfyV/feg77Ph+eOn/af/Z/zH/Ac/fvzb8v9N8rP0/Wrn81T6X3G/1vlMofzMDX6d87nS6dn4ddvXzf7Z/sTq+Uvn08++nw+/Rfs/1GEplKeZ/yU9ZVQqz+z850Q+vXh5Lezve3n/vTD8+PHjD+hXWe/N6c9TBXP7P3kqYHb/C39tf/UKKN4AZvJP1ECmMYD6lnfCKmgE8Rk/",
+  "meta": {}
+}

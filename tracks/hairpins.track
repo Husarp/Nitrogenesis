@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "Hairpins",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 66.5,
+    "y": 36.5,
+    "angleDeg": 0
+  },
+  "cells": "7dxBbsMwDARA08j/3xzk0MJF7tSiO/OBdinFkijD9w0AAAAAAABAswlQHf5gFT5/9QpwqAIZ4f9UYXn0ryutAr3Dv16AwPyfCnTnXyzAhE6AaZ8A07b+H3wExDi3CgYWoPIYVp3/WYApLUD3BLifE0B++eWX3/Pf+m//V3EWOLr/7z3/PdPXnf8TuyDbwx/WAyqPf63Hv8Q3+cXvu//Nmf3H7v/n+38oev8jJn7Cibv6yDmdHYdLw0m/UX755ddwt/5XT4DuDVDp/r/7/Nd+/q/v/7T3/+r7v/X9//r7H8+A9vvf+vt/7394/8f7X7oR2lH6kfLLL7/8nv/W//+//4v6/M32/n8mNv4sxX/96OuAPcKH5V8Z/onNPweG/1XX/43Nv7T2heZf2/lk/v5XP30Tl3+Wv/6Vs/4fuf+fNHft5y9vAAAAAAAAAH69AQ==",
+  "meta": {}
+}
