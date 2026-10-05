@@ -417,23 +417,26 @@ Each milestone ends with: tests green, `SimBench` numbers recorded in `NOTES.md`
 run, and a short "what to try" list. **Milestone builds** are uploaded as a zip on a GitHub **pre-release**
 (the `/releases/latest` updater ignores pre-releases). They are never put in `~/shared`.
 
-Model per milestone (owner's rule: cheapest model that does the job well). Sonnet is fine when the result is
-fully specified. Physics feel, evolution tuning, threading and the generator need judgement and iteration, so
-they go to Opus. **Every milestone gets a review by Opus 5.5 (high) before the owner tests it.**
+Model per milestone follows the owner's rule (~/.claude/CLAUDE.md, 2026-10-05): pick a **lane** by the hardest part
+of the change — S small, T2 standard, T3 hard (unclear bugs, data, cross-cutting, anything that can lose data),
+T4 high-value (architecture, final judgements). Coding is **Opus 5.5** with effort by lane (S medium, T2 high,
+T3 xhigh, T4 max). **Sonnet** only for lookups and mechanical edits. **No Fable** unless a task is clearly beyond
+Opus 5.5 at max, and then only after asking the owner. **No Codex reviews.** Each milestone gets an Opus 5.5 review
+at its lane's effort before the owner sees it.
 
-| # | Milestone | Content and acceptance | Model |
+| # | Milestone | Content and acceptance | Lane → model |
 |---|---|---|---|
-| M0 | Setup | Ask the owner about the GitHub repo (Husarp per rules; public/private). Install the .NET 10 SDK and **one pinned Godot .NET stable (pinned: 4.7.2, SDK 10.0.401)** + matching export templates (by script, checksum), recorded in `build/versions.txt`. Repo skeleton (§2), `VERSION` file, headless export `godot --headless --path app --export-release "Windows Desktop"`, rcedit via Wine for icon/version. **Accept:** the zip unpacks and runs on the EliteBook; the window opens at the 60 FPS cap; exe Properties show the icon and version. | Sonnet 5.5 |
-| M1 | Sim core | Grid, clearance, distance field, reference driver, car physics, sensors, MLP + FastMath, evolution, IAgentMode, scheduler/threading, recordings, RNG, file formats (§5.1), 5 bundled hand-made tracks. **Accept:** all §9 unit tests; `learn-suite` passes on bundled tracks; bench targets met on the Linux box (re-measured on the laptop in M2). | **Opus 5.5 high** |
-| M2 | Viewing | Map texture, MultiMesh cars, camera, speed controller + interpolation, pause/step, HUD, follow/click car, rays, **player controller** (keyboard/gamepad → CarPhysics), track picker. **Accept:** 300 cars at 100× on the laptop with visuals, FPS steady at the cap; 0.01× looks smooth. | Opus 5.5 medium |
-| M3 | Training control | Auto/Step/Next generation, Train-to (3 stop conditions) without visuals, graph, stagnation + boost, history, segments, replay views, fork (both kinds), session folder save/resume/autosave. **Accept:** kill the app mid-autosave → it resumes; fork from a thinned generation works. | Opus 5.5 medium |
-| M4 | Editor | Tools, paint types, start/finish, undo/redo, live finishable / too-narrow / grass-shortcut / estimate, Test (reference driver), Drive, save/load. **Accept:** walling off the road shows "Not finishable" within 0.2 s. | Sonnet 5.5 |
-| M5 | Generator | 6 templates, generate similar, validation. **Accept:** 50 seeds per template → ≥ 90 % valid on the first try, and `learn-suite` passes on the fixed-seed tracks. | Opus 5.5 high |
-| M6 | Race yourself | Ghost picker (trackHash match), splits, results, route overlay, restart. | Sonnet 5.5 |
-| M7 | Settings & polish | All settings with kinds/tooltips/presets, resource caps, FPS cap + 75 Hz hint, car models/colours, brain view, sounds. | Sonnet 5.5; brain view + car look by Opus 5.5 high |
-| M8 | Release | Checklist below. | Opus 5.5 medium |
-| M9 | Review pass | Full review of performance, determinism and UX before 1.0. | Opus 5.5 high; Fable for the final call |
-| M10 | Platformer | Side view, gravity/jump physics, block collisions, sensors, editor palette. **Reachability = Dijkstra over a jump graph** (standable cells; edges for walk, fall and jump arcs simulated with the real jump physics), used for progress and finishability. | Opus 5.5 high (physics/graph) + Sonnet 5.5 (UI) |
+| M0 | Setup | Ask the owner about the GitHub repo (Husarp per rules; public/private). Install the .NET 10 SDK and **one pinned Godot .NET stable (pinned: 4.7.2, SDK 10.0.401)** + matching export templates (by script, checksum), recorded in `build/versions.txt`. Repo skeleton (§2), `VERSION` file, headless export `godot --headless --path app --export-release "Windows Desktop"`, rcedit via Wine for icon/version. **Accept:** the zip unpacks and runs on the EliteBook; the window opens at the 60 FPS cap; exe Properties show the icon and version. | done (S) |
+| M1 | Sim core | Grid, clearance, distance field, reference driver, car physics, sensors, MLP + FastMath, evolution, IAgentMode, scheduler/threading, recordings, RNG, file formats (§5.1), 5 bundled hand-made tracks. **Accept:** all §9 unit tests; `learn-suite` passes on bundled tracks; bench targets met on the Linux box (re-measured on the laptop in M2). | done (T3) |
+| M2 | Viewing | Map texture, MultiMesh cars, camera, speed controller + interpolation, pause/step, HUD, follow/click car, rays, **player controller** (keyboard/gamepad → CarPhysics), track picker. **Accept:** 300 cars at 100× on the laptop with visuals, FPS steady at the cap; 0.01× looks smooth. | T2 → Opus 5.5 high |
+| M3 | Training control | Auto/Step/Next generation, Train-to (3 stop conditions) without visuals, graph, stagnation + boost, history, segments, replay views, fork (both kinds), session folder save/resume/autosave. **Accept:** kill the app mid-autosave → it resumes; fork from a thinned generation works. | T3 → Opus 5.5 xhigh (saves can lose data) |
+| M4 | Editor | Tools, paint types, start/finish, undo/redo, live finishable / too-narrow / grass-shortcut / estimate, Test (reference driver), Drive, save/load. **Accept:** walling off the road shows "Not finishable" within 0.2 s. | T2 → Opus 5.5 high |
+| M5 | Generator | 6 templates, generate similar, validation. **Accept:** 50 seeds per template → ≥ 90 % valid on the first try, and `learn-suite` passes on the fixed-seed tracks. | T3 → Opus 5.5 xhigh |
+| M6 | Race yourself | Ghost picker (trackHash match), splits, results, route overlay, restart. | T2 → Opus 5.5 high |
+| M7 | Settings & polish | All settings with kinds/tooltips/presets, resource caps, FPS cap + 75 Hz hint, car models/colours, brain view, sounds. | T2 → Opus 5.5 high |
+| M8 | Release | Checklist below. | T3 → Opus 5.5 xhigh (installer/updater) |
+| M9 | Review pass | Full review of performance, determinism and UX before 1.0. | T4 → Opus 5.5 max |
+| M10 | Platformer | Side view, gravity/jump physics, block collisions, sensors, editor palette. **Reachability = Dijkstra over a jump graph** (standable cells; edges for walk, fall and jump arcs simulated with the real jump physics), used for progress and finishability. | T3 → Opus 5.5 xhigh |
 | later | Maybe | NEAT brains, champions library, training on several tracks, boost/ice surfaces. | — |
 
 ### M8 release checklist (from APP-STANDARDS; copy each item, tick it)
