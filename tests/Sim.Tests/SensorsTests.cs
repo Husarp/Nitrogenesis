@@ -139,4 +139,33 @@ public class SensorsTests
         Assert.Equal(23, mode.InputCount);
         Assert.Equal(0f, mode.Inputs[22], 3);
     }
+
+    [Fact]
+    public void CastRaysGiveTheRayInputsInCells()
+    {
+        var rt = Prepare(TestTracks.Load("s_curve.track"));
+        var physics = new CarPhysics(rt.Grid, rt.Clearance, rt.Settings);
+        var sensors = new Sensors(rt, physics);
+        var inputs = new float[sensors.InputCount];
+        var nonRoad = new float[sensors.RayCount];
+        var wall = new float[sensors.RayCount];
+        Assert.Equal(7, sensors.RayCount);
+        Assert.Equal(30f, sensors.Range);
+        var car = new CarState(rt.Track.Start.X, rt.Track.Start.Y, rt.StartHeading);
+        for (int k = 0; k < 40; k++)
+        {
+            // Poses along the start straight, turning a little each time.
+            car.X += 0.37f * FastMath.CosUnits(car.Heading);
+            car.Y += 0.37f * FastMath.SinUnits(car.Heading);
+            car.Heading = (car.Heading + 911) & FastMath.AngleUnitsMask;
+            sensors.Write(car, 0f, 0f, 0f, 0f, inputs);
+            sensors.CastRays(car.X, car.Y, car.Heading, nonRoad, wall);
+            for (int r = 0; r < sensors.RayCount; r++)
+            {
+                Assert.Equal(inputs[2 * r], nonRoad[r] * (1f / sensors.Range));
+                Assert.Equal(inputs[2 * r + 1], wall[r] * (1f / sensors.Range));
+            }
+        }
+        Assert.Equal((rt.StartHeading + Sensors.RayOffsets(7, 180f)[0]) & FastMath.AngleUnitsMask, sensors.RayAngle(rt.StartHeading, 0));
+    }
 }

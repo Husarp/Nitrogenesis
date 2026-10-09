@@ -14,6 +14,10 @@ using Nitrogenesis.Sim.Racing;
 //                       agent-ticks/s: 200 cars on 7 threads on every bundled track (or X), R runs of S seconds
 //                       each (default 5 × 10 s), median/min and the worst track; then 200 and 300 cars on 1, 3 and
 //                       7 threads on s_curve (or X); then the cost of rays, sensors and brain alone
+//   view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G]
+//                       the training view's simulation side (TrainingHost) under a 60 Hz frame loop, no rendering:
+//                       actual speed and simulation time per frame (defaults: s_curve, 300 cars, 3 threads, 100×);
+//                       --warm G trains G generations at MAX first
 //   learn-suite [--only NAME] [--threads T]
 //                       the §9 learning test on the bundled tracks (or one of them); exits 1 on any failure
 // A track argument is a .track path or the name of a bundled track (looked up in tracks/).
@@ -21,6 +25,7 @@ using Nitrogenesis.Sim.Racing;
 /// <summary>Grass cost for map checks: roadTopSpeed / grassTopSpeed with the default 45 % grass speed (PLAN §3.3).</summary>
 const double GrassCost = 1 / 0.45;
 
+Console.OutputEncoding = System.Text.Encoding.UTF8; // "×" and "—" in a Windows console
 Console.WriteLine($"SimBench — SimVersion {SimInfo.SimVersion}");
 string command = args.Length > 0 ? args[0] : "";
 try
@@ -38,6 +43,9 @@ try
         case "bench":
             return Bench.Run(options.Has("track") ? [options.Track(null)] : TrackPaths.Bundled("s_curve"),
                 options.Int("seconds", 10), options.Int("repeats", 5));
+        case "view":
+            return ViewBench.Run(options.Track("s_curve"), options.Int("pop", 300), options.Int("threads", 3),
+                options.Double("speed", 100), options.Int("seconds", 10), options.Has("warm") ? options.Int("warm", 0) : 0);
         case "learn-suite":
             return LearnSuite.Run(options.Int("threads", Environment.ProcessorCount - 1), options.Text("only"));
     }
@@ -47,7 +55,7 @@ catch (ArgumentException e)
     Console.Error.WriteLine(e.Message);
 }
 Console.Error.WriteLine("Usage: SimBench make-tracks [dir] | reference [dir] | train --track X --gens N [--pop P] [--threads T] [--seed S]" +
-                        " | bench [--track X] [--seconds S] [--repeats R] | learn-suite [--only NAME] [--threads T]");
+                        " | bench [--track X] [--seconds S] [--repeats R] | view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G] | learn-suite [--only NAME] [--threads T]");
 return 2;
 
 static int MakeTracks(string dir)
@@ -147,6 +155,12 @@ internal sealed class Options
 
     public int Int(string name, int fallback) => _values.TryGetValue(name, out string? v)
         ? int.TryParse(v, out int i) && i > 0 ? i : throw new ArgumentException($"--{name} must be a positive whole number.")
+        : fallback;
+
+    public double Double(string name, double fallback) => _values.TryGetValue(name, out string? v)
+        ? v.Equals("max", StringComparison.OrdinalIgnoreCase) ? double.PositiveInfinity
+        : double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double d) && d > 0 ? d
+        : throw new ArgumentException($"--{name} must be a positive number or 'max'.")
         : fallback;
 
     public string? Text(string name) => _values.TryGetValue(name, out string? v) ? v : null;

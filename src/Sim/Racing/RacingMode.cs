@@ -31,6 +31,7 @@ public sealed class RacingMode : IAgentMode
     // Progress record (RacingFitness.Progress, split into arrays).
     private readonly float[] _bestDist, _stallRefDist;
     private readonly int[] _bestTick, _stallTick;
+    private RouteTrails? _trails;
 
     /// <param name="track">Prepared track; its settings are the ones used.</param>
     /// <param name="agentCount">Number of cars.</param>
@@ -76,6 +77,20 @@ public sealed class RacingMode : IAgentMode
     public Sensors Sensors => _sensors;
     public int TimeLimitTicks => _timeLimitTicks;
 
+    /// <summary>
+    /// Each car's route this generation (for the view), or null (the default; headless training keeps none).
+    /// Set it only while no step runs; it takes effect at the next <see cref="Reset"/>. It only reads car state.
+    /// </summary>
+    public RouteTrails? Trails
+    {
+        get => _trails;
+        set
+        {
+            if (value is not null && value.Agents != AgentCount) throw new ArgumentException("The trails must have one route per car.", nameof(value));
+            _trails = value;
+        }
+    }
+
     public int AgentCount { get; }
     public int InputCount { get; }
     public int OutputCount => RacingSettings.OutputCount;
@@ -105,6 +120,7 @@ public sealed class RacingMode : IAgentMode
             _stallRefDist[i] = startDist;
             _bestTick[i] = 0;
             _stallTick[i] = 0;
+            _trails?.Start(i, start.X, start.Y);
         }
         Array.Clear(Outputs, range.Start * OutputCount, range.Count * OutputCount);
     }
@@ -227,6 +243,7 @@ public sealed class RacingMode : IAgentMode
         int tickBefore = _tick[i];
         int tick = tickBefore + 1;
         _tick[i] = tick;
+        _trails?.Write(i, tick, car.X, car.Y);
         float mx = car.X - x0, my = car.Y - y0;
         _driven[i] += MathF.Sqrt(mx * mx + my * my); // IEEE sqrt: deterministic
 

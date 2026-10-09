@@ -78,6 +78,84 @@ public class RacingModeTests
     }
 
     [Fact]
+    public void RouteTrailsDoNotChangeTheTrajectory()
+    {
+        var mode = new RacingMode(Sprint(), 6, 1800) { Trails = new RouteTrails(6, 1800) };
+        mode.Reset(AgentRange.All(6)); // trails take effect at the reset
+        ulong hash = RunAndHash(mode, new ScriptedPolicy(mode), 1800);
+        Assert.Equal($"0x{ExpectedSprintTrajectoryHash:X16}", $"0x{hash:X16}");
+    }
+
+    [Fact]
+    public void RouteTrailsRecordEachCarEveryStride()
+    {
+        const int n = 4, limit = 600;
+        var trails = new RouteTrails(n, limit);
+        Assert.Equal(1, trails.Stride); // 601 samples fit
+        var mode = new RacingMode(Sprint(), n, limit) { Trails = trails };
+        mode.Reset(AgentRange.All(n));
+        var policy = new ScriptedPolicy(mode);
+        var expectedX = new List<float>[n];
+        var expectedY = new List<float>[n];
+        for (int i = 0; i < n; i++)
+        {
+            expectedX[i] = [mode.Car(i).X];
+            expectedY[i] = [mode.Car(i).Y];
+        }
+        for (int t = 0; t < limit; t++)
+        {
+            mode.Step(AgentRange.All(n), 1, policy);
+            for (int i = 0; i < n; i++)
+            {
+                if (mode.Tick(i) != expectedX[i].Count) continue; // done earlier: no new sample
+                expectedX[i].Add(mode.Car(i).X);
+                expectedY[i].Add(mode.Car(i).Y);
+            }
+        }
+        var x = new float[trails.SamplesPerCar];
+        var y = new float[trails.SamplesPerCar];
+        for (int i = 0; i < n; i++)
+        {
+            int count = trails.CopyTo(i, trails.Count(mode.Tick(i)), x, y);
+            Assert.Equal(expectedX[i].Count, count);
+            Assert.Equal(expectedX[i], x[..count]);
+            Assert.Equal(expectedY[i], y[..count]);
+        }
+        // A reset starts every route again at the start.
+        mode.Reset(AgentRange.All(n));
+        Assert.Equal(1, trails.Count(mode.Tick(0)));
+        trails.CopyTo(0, 1, x, y);
+        Assert.Equal((mode.Car(0).X, mode.Car(0).Y), (x[0], y[0]));
+    }
+
+    [Fact]
+    public void RouteTrailStrideKeepsAnyTimeLimitSmall()
+    {
+        Assert.Equal(1, new RouteTrails(1, 2047).Stride);
+        Assert.Equal(2, new RouteTrails(1, 2048).Stride);
+        Assert.Equal(2, new RouteTrails(1, 3600).Stride); // 60 s
+        var longest = new RouteTrails(1, (int)RacingSettings.MaxTimeLimitSeconds * RacingSettings.TicksPerSecond);
+        Assert.Equal(128, longest.Stride);
+        Assert.InRange(longest.SamplesPerCar, 1, RouteTrails.MaxSamplesPerCar);
+        var t = new RouteTrails(1, 3600);
+        Assert.Equal(1, t.Count(0));
+        Assert.Equal(1, t.Count(1));
+        Assert.Equal(2, t.Count(2));
+        Assert.Equal(1801, t.Count(3600));
+        Assert.Equal(t.SamplesPerCar, t.Count(int.MaxValue));
+    }
+
+    [Fact]
+    public void SteppingWithRouteTrailsDoesNotAllocate()
+    {
+        var mode = new RacingMode(Sprint(), 8, 1800) { Trails = new RouteTrails(8, 1800) };
+        mode.Reset(AgentRange.All(8));
+        var policy = new ScriptedPolicy(mode);
+        mode.Step(AgentRange.All(8), 5, policy); // warm up
+        Allocations.AssertSteadyStateFree(() => mode.Step(AgentRange.All(8), 20, policy));
+    }
+
+    [Fact]
     public void ScriptedRunCoversRealDriving()
     {
         // Guards the pinned hash against testing nothing: the script drives, finishes, spins onto grass and stalls.

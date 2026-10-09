@@ -47,6 +47,29 @@ public sealed class Sensors
 
     public int InputCount { get; }
 
+    /// <summary>Number of rays.</summary>
+    public int RayCount => _rayOffsets.Length;
+
+    /// <summary>Ray range, cells.</summary>
+    public float Range => _range;
+
+    /// <summary>Angle of ray <paramref name="ray"/> for a car with heading <paramref name="heading"/>, both in angle units.</summary>
+    public int RayAngle(int heading, int ray) => (heading + _rayOffsets[ray]) & FastMath.AngleUnitsMask;
+
+    /// <summary>
+    /// The rays of <see cref="Write"/> in cells (for drawing them): for each ray the distance to the first non-road
+    /// cell and to the first wall-or-danger cell, capped at <see cref="Range"/>. Write's ray inputs are these
+    /// values / range. Spans must hold <see cref="RayCount"/> values. Does not allocate.
+    /// </summary>
+    public void CastRays(float x, float y, int heading, Span<float> nonRoad, Span<float> wall)
+    {
+        for (int r = 0; r < _rayOffsets.Length; r++)
+        {
+            int angle = heading + _rayOffsets[r];
+            CastRay(x, y, FastMath.CosUnits(angle), FastMath.SinUnits(angle), out nonRoad[r], out wall[r]);
+        }
+    }
+
     /// <summary>
     /// Ray angles relative to the heading, in angle units: evenly from −spread/2 to +spread/2 inclusive; at a
     /// full 360° the last ray would repeat the first, so the turn is divided by the count instead.

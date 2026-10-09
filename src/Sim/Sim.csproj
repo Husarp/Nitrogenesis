@@ -6,4 +6,10 @@
     <RootNamespace>Nitrogenesis.Sim</RootNamespace>
     <AssemblyName>Nitrogenesis.Sim</AssemblyName>
   </PropertyGroup>
+  <!-- The Godot export builds this project with Configuration=ExportRelease/ExportDebug, which the SDK does not
+       optimize by default (only "Release" is): the shipped simulation ran with unoptimized JIT code (MinOpts),
+       ~4.5× slower. Optimize every configuration except Debug. -->
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
 </Project>

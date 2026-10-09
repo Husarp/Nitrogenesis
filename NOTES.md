@@ -435,3 +435,276 @@ now 2** (physics clamp, passability and the reference driver changed trajectorie
     track now, hand-made until the generator (M5).
   - **grass_shortcut has a wide grass apron**, beyond the 1–3-cell verges of §7 (a generator rule); the apron is
     what makes it a grass-cutting test. `BundledTracksTests` exempts it from the verge-width check.
+
+## M2 — Viewing
+
+### Stage A — the core view (2026-10-09)
+
+Done: main menu (Watch training · Drive (disabled until Stage B) · Quit), track picker (bundled tracks with a map
+preview), training view: map texture, all cars in one MultiMesh, camera (wheel zoom, drag / WASD pan, follow best),
+speed controller with interpolation, pause / one tick, HUD. Generations run back to back. New in Sim (all with tests):
+`Core/SpeedController` (+ `SpeedMeter`), `Core/SnapshotInterpolation`, `Racing/TrainingHost` (the scheduler thread);
+SimBench `view`. 334 tests green (Debug and Release). Every pinned hash is unchanged; SimVersion stays 2 (no sim math
+changed).
+
+- **Threads:** `TrainingHost` runs the `GenerationRunner` on its own "Sim scheduler" thread, which is worker 0 of the
+  `AgentScheduler` (W threads in total, as in M1). Visual default W = physical cores − 1, min 1 (`View/CpuInfo`: Windows
+  `GetLogicalProcessorInformationEx`, Linux `/sys/.../topology`); the laptop gets 3, this box 11.
+- **Per frame:** the render thread calls `host.Frame(delta)` (adds `delta × 60 × speed` to ticksDue, wakes the sim
+  thread) → copies the snapshot pair → interpolates → fills one pre-allocated `float[]` (16 floats per instance:
+  Transform2D, colour, custom) → one `RenderingServer.MultimeshSetBuffer` + `MultimeshSetVisibleInstances`. The sim
+  thread runs the due whole ticks within the 14 ms budget, sizing its `RunTicks` pieces from a running estimate of
+  the cost per *agent*-tick × alive cars (a per-tick estimate overshot badly at each generation start, when 300 cars
+  are alive again after a cheap tail). Measured allocation of the render path: **0 B per frame** (F3 debug rows).
+- **Bundled tracks in the export:** the app reads `res://tracks/*.track`. `app/Nitrogenesis.csproj` copies the
+  repository's `tracks/` into `app/tracks/` (gitignored) on every build, `build/export-windows.sh` copies them before
+  the import, and `export_presets.cfg` has `include_filter="tracks/*.track"`. Checked: the Windows zip run under Wine
+  with `Nitrogenesis.exe --headless -- --check-tracks` lists all 7 tracks with their pinned hashes.
+- **Fixed: the exported app ran an unoptimized simulation (since M0).** Godot builds the referenced Sim project with
+  `Configuration=ExportRelease`, and the .NET SDK only optimizes `Release`, so the shipped `Nitrogenesis.Sim.dll` had
+  the JIT optimizer disabled (every method compiled with MinOpts): 5 generations of 300 cars took 4.5 s in the app vs
+  1.0 s in SimBench. `src/Sim/Sim.csproj` now optimizes every configuration except Debug; the exported dll reports
+  `IsJITOptimizerDisabled = False` and the app matches SimBench (MAX: ~75× → ~400×). (Runs from the editor / `--path app`
+  still use the Debug Sim and are ~4.5× slower; measure exported builds.)
+- **Dev flags** (debug builds only, after `--`; since Stage C the measuring ones work in release builds too): `--track NAME`, `--picker`, `--speed X|max`, `--threads N`, `--pop N`,
+  `--seed S`, `--zoom Z`, `--timings`, `--stats` (prints timings every second), `--screenshot PATH --after S`,
+  `--quit-after S`. `--check-tracks` works in every build (the export check above).
+
+**Timings** (this Linux box: 12 cores, shared, load average 5–9 during the runs; s_curve, seed 1):
+
+| Run | Speed | Result |
+|---|---|---|
+| App, Linux debug export, xvfb + llvmpipe (software GL), 1280×720, 300 cars, 3 threads | 1× | 60 FPS, sim 0.16–0.29 ms/frame, render path 0.05–0.07 ms |
+| same | 10× | 60 FPS, actual 10×, sim 0.3–1.0 ms/frame |
+| same | **100×** | **60 FPS, actual 100×** (91× in the second with the screenshot), sim 5–6 ms/frame, render path 0.07–0.10 ms, 0 B |
+| same | MAX | 58–59 FPS, actual 330–450×, sim 14.8 ms/frame (the budget) |
+| same, 200 cars, 11 / 3 / 1 threads | 1× | sim 0.6–0.7 / 0.3 / 0.3 ms/frame (waking 10 helpers costs ~0.3 ms) |
+| same, 300 cars, 11 threads | 100× | 60 FPS, actual 99–100×, sim 2.6–3.9 ms/frame |
+| SimBench `view` (no renderer, 60 Hz loop), 300 cars, 3 threads, after 30 generations at MAX | 100× | actual 100× on s_curve, hairpins, labyrinth; sim per frame median 2.5–2.7 ms, p95 12–14 ms, max 16–27 ms |
+| same | MAX | s_curve 374×, hairpins 417×, labyrinth 600× |
+
+The §9 visual target (300 cars at 100× with 3 sim threads, FPS steady at the 60 cap) holds here, also with a software
+renderer that takes CPU from the sim; the laptop (Iris Xe) is the real check. 0.01× is smooth: the interpolated
+position of the followed car moves by the same amount every frame across tick boundaries (checked with a per-frame
+position print at 0.25× and 0.01×; `SpeedControllerTests.SlowSpeedIsSmooth`). Screenshots: `out/shots/` (menu, picker,
+1×, 10×, 100×, MAX).
+
+**Stage A decisions:**
+
+- **Synchronising alpha with the snapshot at 1× and slower.** The sim thread runs asynchronously, so a frame could draw
+  the old pair with the new alpha (a visible hitch every tick). At 1× and slower the sim runs one tick per
+  `RunTicks` (prev/curr always one tick apart) and the render thread waits for that frame's tick, at most 4 ms
+  (`TrainingHost.WaitForFrame`; the work is 0.1–0.7 ms). Above 1× nothing waits and only curr is drawn. Then alpha =
+  frac(ticksDue) exactly as §4 says.
+- **Backlog cap:** ticksDue holds at most 0.25 s of game time at the target speed (min 2 ticks), so a long frame or a sim
+  that cannot keep up never makes it race ahead afterwards; the shortfall shows as the actual speed. The actual speed
+  is measured over 0.5 s windows; the HUD shows "100× (actual 64×)" (orange) when it is below 90 % of the target, and
+  "MAX (actual 400×)" at MAX. Leaving MAX drops its endless request. No game time piles up while the track is
+  prepared (the reference driver runs first, on the sim thread; the HUD says "Preparing the track…").
+- **Best car / leader:** the car with the highest live score among those still on the track (running or finished);
+  it gets the gold outline (a gold silhouette instance ~0.35 cell bigger, drawn just under it; the leader is drawn
+  last, on top) and the camera follows it. **Hidden cars:** crashed, stalled and timed-out cars are not drawn
+  (visible instance count); finished cars stay parked in the finish.
+- **Camera:** 100 % = 6 px per cell, zoom 25 %…800 % around the cursor; it moves rigidly with the followed car (keeps
+  up at 100×), glides when the leader changes, snaps back to the start on a new generation. Dragging (any mouse
+  button) or WASD/arrows switch to free; F follows the best again. Keys: − / + (also = and keypad), Space, `.`, F,
+  F3 (timings), Esc (menu).
+- **Total training time** = real time spent training (not paused), shown h:mm:ss. **Best time** = fastest finish of
+  this training (one segment until M3), including live finishes of the running generation.
+- **Car colours:** random HSV (S 0.6–0.9, V 0.8–1) per car index, fixed for the view. The car is an 18 × 11 px sprite
+  (≈ 6 px per cell, like the map) on a hitbox-sized quad; body pixels are tinted by a small canvas shader.
+- **Map colours:** road dark grey, grass green, wall near-black brown, danger orange-red (checkered in two shades),
+  finish black/white checkered per cell; a faint fixed per-cell brightness jitter on road/grass/wall.
+- **No history yet:** the view's runner does not keep population snapshots (no history store until M3), so no 241 KB
+  copy per generation.
+- **MultiMesh custom bounds:** the buffer is pushed straight to the RenderingServer, so Godot kept the bounds of the
+  first (empty) buffer and culled every car; the MultiMesh gets a custom AABB covering the map.
+- **HUD text** is refreshed 10 times per second (string formatting allocates a little; it is outside the render path).
+
+### Stage B — interaction and the player car (2026-10-09)
+
+Done: click a car → the camera follows it, it gets a light-blue outline, its sensor rays and its route this
+generation are drawn; camera modes best / selected / free (HUD row "Camera"); **Drive** in the menu → track picker →
+drive one car yourself (keyboard or gamepad → the same `CarPhysics`): 3-2-1 countdown, live timer, finish time,
+best time, progress, R = restart, Esc / Menu button = back to the menu; the player's car is white with an orange
+outline and draws its route. Esc or the new "Menu (Esc)" button leaves the training view; the simulation threads are
+joined when the view is freed (debug log: "simulation stopped in 0.9–10 ms"). F3 now shows the main thread's bytes
+per frame and the garbage collections. New in Sim (all with tests): `Racing/RouteTrails` (every car's route,
+written by `RacingMode` when switched on), `Sensors.CastRays` / `RayAngle` / `RayCount` / `Range`,
+`Racing/PlayerControls` (0.1 s key ramp, gamepad dead zones), `Racing/PlayerRun` (one car: countdown, timer, finish,
+crash, restart, route), `TrainingHost.Watch` / `CopyTrail`, `ReferenceDriver.CreatePilot` (public, for the debug
+autopilot and a test). 348 tests green (Debug and Release); every pinned hash unchanged (a new test runs the pinned trajectory with
+trails on); SimVersion stays 2.
+
+- **Rays** are cast on the render thread with the training's own `Sensors` (immutable, allocation-free) at the car's
+  drawn pose: `Sensors.CastRays` is the code `Sensors.Write` uses, and a test checks its values × 1/range equal the
+  brain's ray inputs bit for bit. (The inputs array itself is written by the workers mid-step, so the render thread
+  must not read it.) Drawing: a thin white line to the first wall/danger (or the range), a yellow tick where the ray
+  first leaves the road, a red tick at the hit.
+- **Route trail:** `RacingMode` records every car's centre every `Stride` ticks into `RouteTrails` (stride = the
+  smallest power of two that keeps a generation within 2048 samples per car: 1 up to a 34 s limit, 2 up to 68 s,
+  … 128 at the 3600 s maximum; 300 cars with a 60 s limit ≈ 4.3 MB). So a car clicked late still shows its whole
+  route since the start, also at 100×. Only the view's host switches it on; headless training keeps none (SimBench
+  `bench` and `view` unchanged within noise). The scheduler thread copies the watched car's route after each frame
+  (workers idle); a new watched car is copied at the next frame even while paused.
+- **Selection rules:** a click is a left press + release that moves < 5 px (more is a drag, which pans and switches
+  to free). It picks the nearest drawn car within its half-length + 0.5 cell (at least 12 px when zoomed far out);
+  a click on empty road changes nothing. A selected car belongs to its generation (car i is another genome in the
+  next one): when the generation ends, the selection is dropped and the camera goes back to the best car. If the
+  selected car crashes or stalls it disappears like the others, the camera stays where it stopped and its route
+  stays drawn (HUD: "car 17 (stalled)"). F = follow the best car again (drops the selection). In free mode a
+  selected car keeps its rays and route. Following best shows the leader's rays and route.
+- **Outlines:** best car gold (as in Stage A); selected car light blue, one size wider, so a selected best car shows
+  both; player's car orange (the accent).
+- **Player controls** (`PlayerControls`): keys set a target of −1/0/+1 per axis and the output moves towards it at
+  1/0.1 s (6 ticks from 0 to full, 12 ticks from full left to full right). Gamepad (device 0): left stick steers
+  (dead zone 0.2), right trigger throttle and left trigger brake/reverse (dead zone 0.05, throttle = RT − LT);
+  outside its dead zone an analog axis is used directly and wins over the keys. WASD are read by physical
+  position (AZERTY users get ZQSD), arrows by key. Gamepad Y or Start = restart, Back = menu (also in training).
+- **Player run** (`PlayerRun`): same physics and finish rule as a training car (finish time at sub-tick precision),
+  checked by a test: driven by the reference driver's control law it finishes in exactly the reference time
+  (sprint, s_curve; in the app the debug autopilot finishes s_curve in 16.59 s = the reference). No time limit and
+  no stall stop for the player. Countdown 3 s; inputs held during the countdown are already ramped at "GO". The
+  route keeps a point per tick, halving (every second point, stride ×2) whenever 4096 points are used. Physics:
+  default racing settings (a ghost's segment physics comes with M6). Camera zoom 200 %, rigidly on the car; the
+  wheel zooms. Frame loop: one device read per frame, the 1× `SpeedController` gives the due ticks, the car is drawn
+  between the last two ticks (same interpolation as training).
+- **Allocation check (F3):** `View/FrameAllocMeter` takes `GC.GetAllocatedBytesForCurrentThread` from one frame's end
+  to the next, so it covers the whole main-thread frame (the view, `_Draw` callbacks, input handlers, other nodes),
+  not only the render path; the row shows the largest frame of the last 0.1 s, green at 0. Taken out on purpose: the
+  HUD text refresh (10/s in training, ~1.1 KB each, shown on its own row) and the debug command line's own work.
+  The GC row counts collections from the first generation on (the set-up allocates). The trail is one
+  `DrawPolyline` per frame from pre-allocated power-of-two arrays (tail padded with the last point), so `_Draw`
+  allocates nothing.
+
+**Checks** (this Linux box, shared, load average 5–9; xvfb + llvmpipe software GL, 1280×720):
+
+| Run | Result |
+|---|---|
+| Linux debug export, s_curve, 300 cars, 3 threads, 1×, following a selected car (route + rays) | 58–60 FPS, sim 0.23–0.43 ms/frame, render path 0.07–0.09 ms, **0 B every frame**, 0 collections |
+| same, 100×, following the best car (route + rays) | 58–60 FPS in the quieter run (35–58 in a second one with the box busier), actual 100×, sim 4.5–7 ms/frame, render path 0.07–0.10 ms, **0 B every frame**, 0 collections |
+| `--path app` (Debug Sim), s_curve 200 cars 1×, with and without a selected car, 12 s each, twice | same FPS either way (57–60 after the first second): the route and rays cost nothing visible |
+| Drive, s_curve, debug autopilot | 60 FPS, finish 16.59 s (the reference time), 0 B per frame apart from HUD text and screenshots |
+| Drive, sprint, keys injected through Godot's input (`--press`) | throttle ramps to 1, steer passes 0.33 on the way, S brakes and reverses (−3.4 cells/s), R restarts (attempt 2, 1 s countdown), arrows drive |
+| Menu → Drive → picker → Start → Esc → menu, by injected keys | works; Esc in training: menu, simulation joined in 0.9 ms |
+| SimBench `bench` s_curve 3 × 3 s, before / after | 1 thread 1.24 / 1.19 M, 300 cars 7 threads 4.24 / 4.44 M agent-ticks/s (noise) |
+| SimBench `view` 100×, 300 cars, 3 threads, before / after (trails on) | actual 100× both, sim median 2.0–2.5 / 1.8–2.3 ms per frame |
+| Windows export (`build/export-windows.sh`) under Wine | tests green; `--headless -- --check-tracks` lists the 7 tracks with their pinned hashes; `--headless --quit-after 120` runs and exits without errors |
+
+Screenshots: `out/shots-m2b/` (follow + rays at 1× and 100×, drive countdown / driving / finish / keys, picker,
+menu after Esc).
+
+**New debug flags** (debug builds, after `--`): `--drive NAME` (drive at once), `--autopilot` (the reference
+driver's control law drives the player car), `--select N` (follow car N), `--click-car N@T` (a real left click on car
+N at T s), `--press KEY@A-B,…` (hold keys through Godot's input), `--screenshot PATH@T,PATH@T…` (several shots;
+`--screenshot PATH --after S` still works). `--stats` prints allocations per second and, in drive, phase/time/input.
+
+**Also fixed:** `TrainingHostTests.TenXRunsTenTicksPerFrame` failed once in a full test run on the busy box (51 of 60
+ticks: a frame's work overran the 14 ms budget, which correctly leaves the rest due). The test now lets frames
+without new game time run the rest and checks that exactly 60 ticks were due.
+
+### Stage C — review fixes (2026-10-09)
+
+A review of Stage A + B found ten problems; all are fixed. New / changed tests: `SpeedControllerTests`
+(pause drops the backlog, alpha never goes back before the ticks are consumed, the meter reads on-time slow speeds
+as on time, a new target starts a fresh window), `TrainingHostTests` (pause at a falling-behind 100× runs no
+backlog, then Step runs exactly one tick; leader hysteresis), `SnapshotInterpolationTests` (a pair 19 ticks apart
+is drawn at curr). 364 tests green (Debug and Release). Every pinned hash unchanged; SimVersion stays 2 (no sim math changed).
+
+- **Pause stopped nothing the sim already owed (high).** At 100× falling behind, up to 1500 owed ticks kept running
+  after Space, and `.` then ran the whole rest. `SpeedController.Paused` now drops the whole ticks still owed and
+  keeps only the render fraction; a tick already running when Space is pressed keeps the fraction too
+  (`Consume` of more than was due). Step = exactly one tick.
+- **Outlines were not solid (medium).** In a Godot 4 canvas `fragment()`, COLOR already carries the texel, so the gold
+  / light-blue silhouettes drew the sprite's black rim and tyres and the roof tint was applied twice. The shader now
+  takes the instance colour in `vertex()` (a varying): the best car has a solid gold outline, the selected car a
+  solid light-blue one, the roof is the intended 0.78 shade (`out/shots-m2c/z8-best.png`, `z8-sel.png`).
+- **The laptop check was impossible with the release build (medium).** Release builds now keep the measuring flags
+  (`--track`, `--drive`, `--picker`, `--pop`, `--speed`, `--threads`, `--seed`, `--zoom`, `--timings`, `--stats`,
+  `--select`, `--quit-after`); only the input-injecting and file-writing ones stay debug-only (`--click-car`, `--press`,
+  `--autopilot`, `--screenshot`). The zip now also has `SimBench/SimBench.exe` (self-contained single file, ~37 MB,
+  with the bundled tracks in `SimBench/tracks/`), so the M1 bench targets can be re-measured on the laptop. It prints
+  UTF-8 (× and — in a Windows console).
+- **Backward steps at 1× and slower when the 4 ms wait timed out (medium).** Alpha is now `ticksDue` clamped to 0…1:
+  while a whole tick is still owed the pair is stale and curr is drawn (alpha 1), instead of wrapping to the small
+  fraction and drawing the car almost a tick back. Per-frame trace at 0.25× (s_curve, 300 cars): largest step of the
+  followed car 0.075 cells vs a median 0.050 (no backward or double steps).
+- **Pause / Step / speed slider buttons (medium, PLAN §6.2).** The training HUD has Pause/Resume, Step (enabled while
+  paused) and a 13-step speed slider (0.01× … MAX) with its label. They take no keyboard focus (Space and `.` still
+  reach the view) and the slider ignores the wheel (which zooms). A status line ("Running" / "Paused") is always
+  shown, so pausing does not move the buttons under the cursor. Gamepad in training: LB / RB speed, A pause, X step,
+  Back menu (second hint line). Checked with injected clicks: Pause → paused, Step → one tick, slider → 100×.
+- **Pairs many ticks apart were interpolated (low).** `SnapshotInterpolation` lerps only when curr is exactly one tick
+  after prev; otherwise curr is drawn.
+- **False "can't keep up" at 0.05× (low).** A `SpeedMeter` window now lasts at least 0.5 s and at least 20 ticks at the
+  target speed (0.05×: 6.7 s, 0.01×: 33 s), and a new target speed starts a fresh window (no mixed 1×/100× reading
+  after a change). A test drives the meter at a perfect 60 FPS for 120 s at 0.01× … 100×: never below 90 %.
+- **Start marker (low).** The map texture paints the start as an arrow in the accent colour (about 4 × 5 cells, cells
+  at least half inside it), pointing along the start heading: in the picker preview, training and drive.
+- **Follow-best lagged at 100× (low).** Two changes: the leader changes only when another car leads by more than
+  1 % of the track (`TrainingHost.LeaderMargin`, or the leader leaves the track), and when the followed car changes
+  the camera already moves with the new car while it glides over. Hairpins, 300 cars, 3 threads, 100×, 13 s
+  (`--path app`, Debug Sim): leader switches 120 → 48, frames with the leader more than 20 cells from the screen
+  centre 7.8 % → 2.0 % (the rest are a crashed leader handing over to a car far behind).
+- **Stale tracks shipped (low).** `export-windows.sh` recreates `app/tracks/` from scratch; the csproj target deletes
+  `app/tracks/*.track` files that are no longer in `tracks/` before copying (checked with a dummy file).
+
+**Checks (Stage C)** (this Linux box, shared):
+
+| Run | Result |
+|---|---|
+| `build/export-windows.sh` | green (tests 364/364), zip 103 MB with `SimBench/` |
+| Windows release exe under Wine, `--headless -- --check-tracks` | the 7 tracks with their pinned hashes |
+| same, `--headless -- --track s_curve --pop 300 --speed 100 --threads 3 --stats --quit-after 20` (release keeps the measuring flags) | 60 FPS, actual 100×, sim 3.3–6.6 ms/frame, 0 B per frame, 0 collections, generation 45 after 19 s |
+| `SimBench\SimBench.exe view --seconds 5` from the zip, under Wine | actual 100×, sim median 2.0 ms, p95 14 ms, 0 late frames |
+| `--path app`, hairpins, 300 cars, injected clicks on Pause, Step, slider | paused, one tick, 100× (`out/shots-m2c/buttons.png`) |
+| `--path app`, s_curve, 0.25×, per-frame position of the followed car | steps 0.050 median, 0.075 max: no backward or double steps |
+
+Screenshots: `out/shots-m2c/` (1× with HUD controls, paused, after clicking Pause / Step / slider, 100×, 800 % best and
+selected outlines, picker with the start arrow, drive).
+
+### Deviations
+
+- Stage A:
+  - **Render thread waits up to 4 ms at 1× and slower** (§4: "It never blocks the UI"). See the decision above; it is
+    bounded, only happens when a tick is due at those speeds, and makes slow motion smooth instead of hitching.
+- Stage B:
+  - **R restarts with a 1-second countdown** (§6.5: "instant-restart key (R)"). R puts the car back at once, from any
+    state, without a menu; a short "1" before "GO" lets the timer start fairly instead of on the key press. The first
+    start counts down from 3.
+  - **The zero-allocation check leaves out the HUD text** (§9: "zero-allocation check in a debug overlay"). The HUD
+    strings are rebuilt 10 times a second in training (every frame in drive, for the running timer); C# strings
+    cannot be refilled in place. That is ~1.1 KB × 10/s, measured and shown on its own row; everything else on the
+    main thread is 0 B per frame. Input events also allocate (Godot creates a managed object for each event it hands
+    to a C# input callback, and a handler's first run sets up runtime data), so frames with mouse movement, clicks
+    or key presses show some bytes (a first click: ~15 KB); watching without touching anything shows 0.
+- Stage C:
+  - **The gold outline is on the leading car with a 1 % hysteresis** (§6.2: "the best car has a gold outline"). A car
+    within 1 % of the track of the best score keeps the gold outline (and the camera) until another car leads by
+    more, or it leaves the track; otherwise the outline and the camera flicked between level cars many times a
+    second at 100×. Scores, selection and the "Best now" row are unchanged (exact).
+
+**What to try (M2):** unzip, run Nitrogenesis.exe.
+
+1. **Watch training** → pick a track → Start. Cars train generation after generation.
+2. − / + or the slider change speed (HUD: target and actual), Space or Pause pauses, `.` or Step runs one tick while
+   paused, wheel zooms, drag or WASD/arrows pan (camera "free"), F follows the best car again. A gamepad: LB / RB
+   speed, A pause, X step. The orange arrow on the road is the start.
+3. **Click a car**: the camera follows it (light-blue outline, HUD "Camera: car N"), its 7 rays show what it senses
+   (yellow tick = road ends, red tick = wall), and a line in its colour shows its route since the generation
+   started. When it crashes the line stays; at the next generation the camera returns to the best car. Following
+   the best car also shows its rays and route.
+4. **F3**: the "Alloc" row should read **0 B / frame** in green at 1× and at 100× while you do not touch the mouse;
+   "GC" should stay at 0 for minutes. Sim/render timings are there too.
+5. **The M2 acceptance on the laptop:** in a terminal in the unzipped folder run
+   `Nitrogenesis.exe -- --track s_curve --pop 300 --speed 100 --threads 3 --timings` (the debug rows are on; F3
+   toggles them). After a few generations: FPS ≈ 60 (cap 60) and the speed line white "100×" (orange "100× (actual
+   64×)" = it cannot keep up). Also try `--speed 0.01`: the cars creep smoothly.
+   **The M1 bench on the laptop:** `SimBench\SimBench.exe bench --seconds 5 --repeats 3` (target ≥ 2.5 M agent-ticks/s
+   with 7 threads; a few minutes) and `SimBench\SimBench.exe view` (the training view's simulation at 100×, 300 cars, 3 threads, no
+   rendering). Send me the last lines.
+6. Esc (or "Menu (Esc)" top right) → back to the menu; start another training: no slowdown from the old one.
+7. **Drive** → pick a track → 3-2-1-GO. W/S or ↑/↓ throttle and brake/reverse, A/D or ←/→ steer; a gamepad works
+   too (left stick, right trigger = gas, left trigger = brake, Y = restart, Back = menu). The timer runs live; at the
+   finish the time shows big, with your best below it. Touch the orange danger cells to see "CRASHED". R restarts
+   (1 s countdown), the wheel zooms, Esc goes back to the menu.

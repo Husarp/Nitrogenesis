@@ -53,6 +53,17 @@ public static class ReferenceDriver
         return new Result(finished, ticks / RacingSettings.TicksPerSecond, status, path);
     }
 
+    /// <summary>
+    /// The reference driver's control law for the cars of <paramref name="mode"/> (it reads each car with
+    /// <see cref="RacingMode.Car"/>, so a one-car mode kept in step with <see cref="RacingMode.SetCar"/> can steer a
+    /// car elsewhere, e.g. a <see cref="PlayerRun"/>). Used by the app's debug autopilot and the tests. Single-threaded.
+    /// </summary>
+    public static IAgentPolicy CreatePilot(RacingMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(mode);
+        return new Pilot(mode);
+    }
+
     /// <summary>The control law. Single-threaded: one pilot drives one car.</summary>
     private sealed class Pilot : IAgentPolicy
     {

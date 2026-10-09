@@ -8,4 +8,18 @@
   <ItemGroup>
     <ProjectReference Include="../src/Sim/Sim.csproj" />
   </ItemGroup>
+  <!-- The bundled tracks live in the repository's tracks/ (the tests and SimBench read them there). The app reads
+       them from res://tracks/, so every build copies them in; the export includes them (export_presets include_filter). -->
+  <ItemGroup>
+    <BundledTrack Include="../tracks/*.track" />
+  </ItemGroup>
+  <Target Name="CopyBundledTracks" BeforeTargets="BeforeBuild">
+    <!-- Drop copies of tracks that were deleted or renamed in tracks/, so they do not ship. -->
+    <ItemGroup>
+      <StaleTrack Include="$(MSBuildProjectDirectory)/tracks/*.track" />
+      <StaleTrack Remove="@(BundledTrack->'$(MSBuildProjectDirectory)/tracks/%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Delete Files="@(StaleTrack)" />
+    <Copy SourceFiles="@(BundledTrack)" DestinationFolder="$(MSBuildProjectDirectory)/tracks" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

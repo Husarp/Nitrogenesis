@@ -23,6 +23,9 @@ dotnet test "$ROOT/tests/Sim.Tests" --nologo -v q
 
 OUT=$ROOT/out/Nitrogenesis
 rm -rf "$OUT" && mkdir -p "$OUT"
+# Bundled tracks go into the pck (res://tracks/, export_presets include_filter); the C# build copies them too.
+# Fresh copy, so a track deleted or renamed in tracks/ does not ship.
+rm -rf "$ROOT/app/tracks" && mkdir -p "$ROOT/app/tracks" && cp "$ROOT"/tracks/*.track "$ROOT/app/tracks/"
 "$GODOT_BIN" --headless --path "$ROOT/app" --import >/dev/null 2>&1 || true
 LOG=$ROOT/out/export.log
 "$GODOT_BIN" --headless --path "$ROOT/app" --export-release "Windows Desktop" "$OUT/Nitrogenesis.exe" >"$LOG" 2>&1
@@ -33,6 +36,13 @@ wine "$RCEDIT" "$OUT/Nitrogenesis.exe" --set-icon "$(winepath -w "$ROOT/app/icon
   --set-file-version "$V.0" --set-product-version "$V.0" \
   --set-version-string ProductName Nitrogenesis --set-version-string FileDescription Nitrogenesis \
   --set-version-string CompanyName Husarp --set-version-string OriginalFilename Nitrogenesis.exe
+
+# SimBench (self-contained, one exe) with the bundled tracks, so the M1 bench targets can be measured on the laptop.
+dotnet publish "$ROOT/tools/SimBench" -c Release -r win-x64 --self-contained -p:PublishSingleFile=true \
+  -p:EnableCompressionInSingleFile=true -p:DebugType=none -o "$OUT/SimBench" --nologo -v q >"$ROOT/out/simbench-publish.log" 2>&1 \
+  || { cat "$ROOT/out/simbench-publish.log" >&2; echo "SimBench publish failed" >&2; exit 1; }
+mkdir -p "$OUT/SimBench/tracks" && cp "$ROOT"/tracks/*.track "$OUT/SimBench/tracks/"
+[ -f "$OUT/SimBench/SimBench.exe" ] || { echo "SimBench.exe missing" >&2; exit 1; }
 
 ZIP=$ROOT/out/Nitrogenesis-$V-win64.zip
 rm -f "$ZIP" && (cd "$ROOT/out" && zip -qr "$ZIP" Nitrogenesis)
