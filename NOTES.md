@@ -1117,3 +1117,132 @@ the user file is deleted); training view still 0 B/frame at 1x and 100x. Fixed:
 11. **Please send back:** anything that felt clumsy (which tool, what you expected), any message that was unclear,
     a track that Test says is fine but cars cannot learn (or the other way round), the delay between an edit and the
     status bar update (it should feel instant), and a saved .track file if something would not open.
+
+## M5 — Track generator (2026-10-13)
+
+Done: `src/Sim/Gen/` (`GeneratorParams.cs`: `TrackTemplate`, `GeneratorParams`, `Templates`; `TrackGenerator.cs`: `Generate`,
+`Validate`, `GenerateValid`, `GenCheck`, `GenResult`), SimBench `gen` and `gen-check`, `make-tracks` also writes the 6 fixed-seed
+generated tracks (`tracks/gen_*.track`, bundled as "<Template> (generated)"), learn-suite cases for them, and the editor's
+**Generate** / **Similar** buttons (`app/Editor/EditorGenerator.cs`, toolbar). 697 tests green (Debug and Release; 84 new:
+`TrackGeneratorTests` and the 6 generated tracks in `BundledTracksTests`). SimVersion stays 2; no physics or default changed.
+
+### How it works
+- One attempt (`Generate`, pure function of template + parameters + seed, xoshiro128** from the seed): a full-wall map; a route on
+  a coarse grid; Chaikin corner cutting (3 passes, ends kept); verge (Grass over Wall) then road with the round brush
+  (`TrackBuilder.Polyline`); the template's features; the finish; the start. Only + − × ÷ and √ on doubles, so the cells are
+  the same on every platform. A test regenerates each committed `gen_*.track` from its meta and compares the cells.
+- **Coarse cell** ≥ (2 × (road radius + verge) + 2) × 4/3 (Labyrinth, not smoothed: × 1): smoothing pulls a corner up to 1/8
+  of a cell per axis, so even two pulled-in corners of corridors that are not joined keep ≥ 2 cells of wall between their
+  verges. Grass never links two parts of the route, so the grass-shortcut check never failed (0 of ~2,100 checked tracks).
+  Minimum cell: Sprint 28, Labyrinth 16, the others 14 (review fix: on smaller cells the smoothed corners are too tight for
+  the time estimate; Twisty with road 4 / verge 1, an 11-cell grid, was valid on the first try for 1 seed in 10, now 13–18 of 20).
+  The grid is centred on the map; centres sit on cell centres (x.5).
+- **Route length** = the middle of the target time × a per-template route-cells-per-second constant
+  (`TrackGenerator.ExpectedSpeed`, 17–19, calibrated with gen-check). The walk counts a coarse step as one cell size and a turn
+  as 0.19 of one less (a smoothed 90° turn is shorter). The reference times then sit at 24–33 s, about ±3 s round 30 s.
+- **Walk** (all but Labyrinth): a self-avoiding walk on the coarse grid from a random border cell heading inwards, with
+  backtracking out of dead ends (100,000 steps max, else "did not fit"); straight on first with the template's straightness
+  (Sprint and Obstacle field 0.85, Twisty 0.15, Wrong turns 0.5), else the two turns first in random order.
+- **Start**: on the first leg facing along it (0/90/180/270°), with 1.5 car lengths of road behind its centre (the road's
+  round end; the start moves forward when the road is narrower than 11 cells). **Finish**: a straight line across the last leg
+  (always along a grid axis) 3 cells before the route's end; the rest of the road up to its round end is Finish.
+- **Validation** (`Validate`): `EditorAnalysis.Run` (finishable, one car length of road behind the start, grass shortcut — the
+  editor's own checks), then `ReferenceDriver.Run`: it must finish within MinSeconds…MaxSeconds (default 20–40 s, parameters).
+  **Retry** (`GenerateValid`): seeds s, s + 1, …, at most 50 seeds; the result's meta holds the seed that passed. On failure:
+  "No valid track in 50 tries (seeds 1–50): <problem> N×, …" plus a hint for the most common problem.
+- Meta: `{template: "WrongTurns", params: {size: "M", roadWidth: 8, verge: 2, branches: 3, minSeconds: 20, maxSeconds: 40},
+  seed: 17}` (only the parameters the template uses). The file format did not need to change (M1 already had
+  `meta:{template?, params?, seed?}` with a round-trip test); reading back ignores unknown keys and wrong types and clamps.
+
+| Template | Defaults (road width / verge / extra) | What it builds |
+|---|---|---|
+| Sprint | 12 / 2 | walk on 28-cell cells, straightness 0.85: long straights, wide smoothed bends |
+| Twisty | 8 / 2 | walk on 19-cell cells, straightness 0.15: a turn at most steps (waves, hairpins) |
+| Labyrinth | 7 / 2 / dead-end length 2 | recursive-backtracker maze over the whole 16-cell grid; the route is the pair of cells about target/cell steps apart whose path passes the most side passages; every cell ≤ 2 steps off the route is kept (dead ends, also forked ones), none at the start or finish; straight corridors with round joins |
+| Wrong turns | 8 / 2 / 3 branches | walk, straightness 0.5; N dead ends of 2–3 cells from different route cells (not the first or last two), each step to the free neighbour nearest the finish (the first must get closer) |
+| Obstacle field | 20 / 2 / 14 obstacles | walk, straightness 0.85; obstacles spaced evenly over the stretches that run straight for (2 × radius + 12) cells before and 12 after: 60 % wall bars (5 thick, 1.5 cells of danger lining) from alternate edges leaving a 4-cell lane, 40 % danger islands (radius 3) with a lane on both sides |
+| Mixed | 8 / 2 | walk whose straightness changes per piece of 3–6 steps: straight (0.85), twisty (0.15), chicane (small danger bars from alternate edges every 14 cells), wrong turn (1 branch to the finish), dead ends (2 short random branches) |
+
+### Acceptance
+
+**gen-check** (`dotnet run --project tools/SimBench -c Release -- gen-check`: seeds 1–50 per template, defaults, M map):
+
+| Template | Valid on the first try | Reference time min / median / max | ms per seed (generate + validate) |
+|---|---|---|---|
+| Sprint | 50/50 (100 %) | 28.4 / 29.9 / 31.5 s | 32 |
+| Twisty | 50/50 (100 %) | 28.1 / 29.4 / 30.5 s | 23 |
+| Labyrinth | 50/50 (100 %) | 27.5 / 29.9 / 32.3 s | 27 |
+| Wrong turns | 50/50 (100 %) | 28.7 / 30.0 / 31.1 s | 25 |
+| Obstacle field | 50/50 (100 %) | 24.3 / 28.3 / 31.7 s | 25 |
+| Mixed | 50/50 (100 %) | 28.7 / 29.9 / 30.9 s | 23 |
+
+More seeds (`--seeds 200 --from 1000`): 100 % for every template except Obstacle field 97 % (6 × the reference driver crashed into
+an obstacle; the next seed was valid each time). L map (`--size L`, 50 seeds): 100 / 100 / 100 / 100 / 90 / 98 %. S map
+(`--size S`): Labyrinth 100 %, Twisty 98 %, Mixed 96 %, Wrong turns 92 %; **Sprint and Obstacle field 0 %**: with their wide
+default roads a 30 s route does not fit on 192×108 ("the route does not fit: try a bigger map, a narrower road, a thinner
+verge or shorter times").
+
+**learn-suite** (`... -- learn-suite`, default settings, seeds 1/2/3): all 39 cases pass and all 12 controls fail, 77 s. The
+fixed-seed generated tracks (defaults, seed 1, each valid on the first try):
+
+| Track | Reference time | Budget | First finish (seeds 1 / 2 / 3) | Random search (control) |
+|---|---|---|---|---|
+| gen_sprint | 30.7 s | 30 | 1 / 0 / 0 | — |
+| gen_twisty | 29.8 s | 100 | 5 / 1 / 2 | — |
+| gen_wrong_turns | 29.7 s | 150 | 1 / 5 / 0 | — |
+| gen_labyrinth | 31.1 s | 200 | 28 / 23 / 47 | no finish in 200 (×3) ✓ |
+| gen_obstacle_field | 26.2 s | 100 | 13 / 4 / 10 | not a control: finishes in 2 of 3 seeds (gen 42, 79) |
+| gen_mixed | 30.1 s | 150 | 20 / 7 / 11 | — |
+
+The hand-made rows are unchanged (labyrinth 151 / 38 / 42, obstacle field 33 / 21 / 26, …). PLAN §3.3's physics values are
+now final: generated M tracks take 24–33 s with them, so nothing was retuned and no template needs the direction hint.
+
+### Decisions
+- **Parameters** (all whole numbers, `GeneratorParams.For(template)` lists them for the UI): map size S/M/L, road width 4–30,
+  verge 1–3, shortest/longest time 5–300 / 10–600 s (the longest stays ≥ 5 s above the shortest), plus Wrong turns: branches
+  0–8; Labyrinth: dead-end length 1–6 maze cells; Obstacle field: obstacles 1–30 (as many as fit). The §7 "target (default
+  20–40 s, setting)" is these two time parameters, so a template can aim at other times.
+- "Retry with the next seed, up to 50 times" = 50 seeds in total (seed … seed + 49).
+- "Generate similar" = the template and parameters from the open track's meta, a new random seed (1 … 2³¹ − 1). It also works
+  after the track was edited (the meta stays) and on a copy of a bundled generated track.
+- The generator treats "one car length of road behind the start" as a hard rule (the editor only warns, M4).
+- Mixed has no row in the §9 table: its learn-suite budget is 150 (that of its hardest pieces, wrong turns).
+- Labyrinth: §7's recursive backtracker is kept, but its mazes have long corridors with few forks, so a route from a fixed start
+  had only 2–3 dead ends; picking the route among all cell pairs for the most side passages gives the "many dead ends" of §7.
+- UI (`EditorGenerator`): **Generate** asks "Save changes?" first (like New/Open), then a box: template buttons (tooltip =
+  description), map size, the template's parameters, seed + **New seed**. It starts with the open track's template and parameters
+  when it was generated, else the last choice. Generating runs on a worker behind "Generating track" (Cancel/Esc stops between
+  seeds; it takes 0.1–0.4 s, longer only when seeds fail); the track opens as a new document without a file, named
+  "<Template> <seed>" (Save asks for a name), and **Test** runs at once, showing the reference time and route. **Similar** is
+  greyed out unless the open track has a template in its meta. A failure shows the summary and the hint.
+- Debug `--do` verbs: `generate:TEMPLATE[,SEED[,S|M|L]]` (defaults; later steps wait), `generate-dialog`, `similar`; `state`
+  ends with `meta=Template/seed`. Screenshots: `/tmp` only (not kept).
+
+### Deviations
+- **Sprint is not straight across the map**: one straight crossing of an M map is ~14 s, below the 20 s minimum, so the sprint
+  snakes (long straights joined by a few wide bends).
+- **Twisty's turns are mostly taken at speed**: smoothed corners on 19-cell cells have a radius of ~6.7 cells and the car turns
+  at 5.2 cells at full speed, so "many turns" shows in the shape and the steering work more than in braking. Tighter corners
+  would need a narrower road than the "medium width" of §7.
+- **The generated obstacle field is easier than the hand-made one**: obstacles only on straights (so the reference driver gets
+  a run-up; without it 18 % of tracks failed) and islands with a lane on both sides. Evolution needs 4–13 generations, random
+  search sometimes finishes it, so it has no random-search control (the hand-made obstacle_field keeps that role).
+- **S map**: Sprint and Obstacle field never fit there with their default road widths (see above); the box says why.
+- No Windows build was made for M5 (not asked for in this run).
+
+### What to try (M5)
+1. **Editor → Generate** (left panel, under Save): pick a template (hover a button for what it makes), keep the defaults and press
+   **Generate**. The track opens at once with the reference driver's time on top ("Finished in 29.8 s") and its route drawn.
+2. **Similar**: press it a few times: the same kind of track, a new layout each time (a new seed). It is greyed out on a map you
+   painted yourself.
+3. **Parameters**: open Generate again (it starts with this track's template and settings): try a wider or narrower road, verge
+   1 or 3, Wrong turns 6, Labyrinth dead-end length 4, Obstacle field 25 obstacles, or a time range like 40–60 s on an L map.
+4. **Seed**: note a track's seed (its name, e.g. "Twisty 1840275531"), press **Similar** for another one, then open Generate (it
+   keeps the template and settings) and type that seed back in: the same track again. The seed alone is not enough: the template
+   and every setting must match too.
+5. **A track that cannot be made**: Sprint on the S map: after a moment a box says no valid track was found in 50 tries and why.
+6. **Edit and use it**: paint on a generated track, Test it, Save it, then train on it from New training (it is under YOUR TRACKS).
+7. **New bundled tracks**: New training and Drive list six "(generated)" tracks (one per template); try training on
+   "Labyrinth (generated)" (first finish around generation 25–50).
+8. **Please send back**: a template whose tracks look wrong or boring, a generated track the cars cannot learn, and any seed
+   where Generate failed although the parameters looked reasonable (with the seed and parameters).

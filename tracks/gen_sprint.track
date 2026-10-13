@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "name": "Sprint (generated)",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 16.5,
+    "y": 44.5,
+    "angleDeg": 0
+  },
+  "cells": "7d0LcsMgDEVRyHj/a+5nMp2p28QGfZDE1QISznMS2xCjx4OiKIqiKMq4uk3tK8+Rws8Qm03FjsBS/ieFkPrmVfEScOXHC8BX/0xgZ36oAFbwIwWwhP8VwM6HP84HYBE/ygdgGT9IAPi39p/5xnd/4QI4Dcn89je23/qc1M9vF85f6+3w4x/7+Sv2fvjx48ePv45fc0UpnV95XS2Z/99FKkkEufzvpirnEsjm115WSuW/nKoaD6CWf3wCo5p/NIBM/nsztV3ymvmPvyzTGv6+tb+V9RsEUOf6bwf/zT+p1fW/vP+bDaDC/b9kXa3I/M/0ulqV+S/8+PGPvy5+/Pjx48ePHz9+/Pjx48ePHz9+/Pjx48ePHz9+/Pjx48ePP84DwPjxp/T3rf1Na0vIrP6m9CRnGv+L/7BLI8jul+4NWsM/vzVmHr9NAKn8XX9jwET+W4+x1vbrB5DJfyuAyn6Dn4Bc/uv9pov71QPI5r98lK+8/6LfwAb+86N8Te/R6Cz+3yns6lfYG7SA/4EfP37ffUzw1/DPfnki7ccrGgt+/OPzB5H2Y++K/hZhP37X3gCTfRzM+jG494ZQ6OOhx//2HJ/lN5ZI/id+Y//h7pcHYMA/HMci7ePVA/k11kBX/vrJ/e6N3EwO/+E6FkkAXfXcL/MLdjPvEZrxCf2CsUz2cVXuxyryS/8HNhGAejtawflfPJbRPs4W/Zhnr/90xnK3j7dhP+7h63/lsazvxx6hN/ziTvR9/VGgKIqiqLT1AQ==",
+  "meta": {
+    "template": "Sprint",
+    "params": {
+      "size": "M",
+      "roadWidth": 12,
+      "verge": 2,
+      "minSeconds": 20,
+      "maxSeconds": 40
+    },
+    "seed": 1
+  }
+}

@@ -8,7 +8,7 @@ public class BundledTracksTests
     private const double GrassCost = 1 / 0.45;
 
     /// <summary>
-    /// Pinned track hashes (cross-checked in Python). A change means the bundled tracks changed, which breaks
+    /// Pinned track hashes (the hand-made ones cross-checked in Python). A change means the bundled tracks changed, which breaks
     /// ghost matching and learn-suite comparisons: only update on purpose (regenerate with SimBench make-tracks).
     /// </summary>
     public static TheoryData<string, string> Tracks => new()
@@ -20,6 +20,13 @@ public class BundledTracksTests
         { "grass_shortcut.track", "fc2be0274c475fe3c2f26aecdc1bb8e604cc7770b3d088581f51d9099764dd4b" },
         { "labyrinth.track", "0c0799f53bf6437e2d62d1f5c4389c97a650bd201edd49f4cc6a8fd1872bfd6f" },
         { "obstacle_field.track", "716e0de770c8809eb2c27feacbc6539823b94299427301001b6ceede4ef27c93" },
+        // Fixed-seed generated tracks (M5; TrackGeneratorTests checks that the generator makes them again from their meta).
+        { "gen_sprint.track", "4839826ac86ff040c78cde168e175c4c4fac0443857843905b32451380ab6479" },
+        { "gen_twisty.track", "34c400a332345c81f5cd66e81129ff1a12ae51b9f445f31f288af2835715cfc1" },
+        { "gen_labyrinth.track", "4a3e7cf8766e15538fc55fe1f37b54624f50a266d0c08381200551e5b2605157" },
+        { "gen_wrong_turns.track", "938923ebf20bb9c1131620eed6a0594e92058d49ad76d9b666f18b2a1617175e" },
+        { "gen_obstacle_field.track", "87f119473d77d1ab8ecc22a19e9862a1548410f0e04db958b03259c6fcdc84cc" },
+        { "gen_mixed.track", "106111a3830c6d675fac04410b60849201ea8e8b5764a0f2d7e2e0e661c9cf94" },
     };
 
     private static Track Load(string file) => TestTracks.Load(file);

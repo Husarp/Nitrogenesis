@@ -178,6 +178,9 @@ Nitrogenesis/
   and an obstacle field that random search cannot solve (control cases), with the start values (and the
   §3.4/§3.7 defaults) unchanged, so nothing was retuned; details in NOTES.md. The tuning target below (20–40 s on
   generated tracks) can only be checked in M5, so the "Final (M1)" column may still change then.
+  **M5: checked, final.** With these values the generator's M tracks take the reference driver 24–33 s (gen-check: 50 seeds
+  per template, all valid on the first try) and the learn-suite passes on the fixed-seed generated tracks, so nothing
+  was retuned.
 
   Tuned so the reference driver takes 20–40 s on generated M tracks.
 

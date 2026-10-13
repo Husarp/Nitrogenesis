@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "name": "Wrong turns (generated)",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 240,
+    "y": 33.5,
+    "angleDeg": 180
+  },
+  "cells": "7Z3hcuMwCISNJ+//zDe9tnO52EiLBNhGuz87GcRH7VhaZGXfKYqiKIqiviRi/TwkKLwMazR7dXhXeD1fF3goPIqybXiQ789D6oY3xBoJb0VBQtgyboefou+HH0Dph5hK+SP8LL49+271uyHmcv4/vDe/qQDKxdcJMX3FvoV3x7cUQL33FimAPnYs/xbLv8XziyO/XMXfGrlbAHEsgFxTgLdx/00jsAjYbAwLPzzZG87+wH+MCU2C0AS74ef4R7L/5Nf+MrWquHn4xflP7hfzLfTk8OQ/ftzxCj0JFcP/boKQ349/WmH82sNOzX6Af3PDd+VvhW9mb+YPmI3O8h/Qdf6jSwbx76GrkUl+UdwabEEnT+dXzRpoRQfzB/pRU/yIVyWWFf15Nt4FULyeEZ8aclPxAujL0SgvaoIfdSoblh72//ctgOr12vnhbzWZ5PdzZET3+j34tcc66Onr2Zw/Z4f6UrsP//GZr0/sTrLHn/+uTUnTiFarrhUB6oz2s/FuxHrw403OuGwc1+wTq73rsiF/8oghqa7OH3JRkf+Z/IObh+L4JZN/m9pB5c//mUs4f3dSmcr/d/Yq4mYczS8qUvl/5+4SYpyPLCqz+SMbB9Pbn+rwZxcAwwhuHF5YgPvxI6ZyaX6gqVCbv9tUqs7fayouwN9sKq/Cn7AiJP9j+IO+Z8i/Mj92f5F/CX5LX6Ye/2bqEhbkN3WJq/BDjttq/MAukUL8yCauuvxIAUrzAwWozd933Irzdx236vw9x608f8dxW4G/5bgtw4+/JUT++vwtWPKTn/wr8uc05sh/T/60nQnkJz/5yX+LVwKaBSD/AvyyNH/zBdQV+HfkMI3K/McSLMd/SV7kJz/5M/mtW6Ju8oIa+aO2hKFnidXj30xniRXk9zzaeDSZ16+y+G0FCM6K/FfwS9Dh/s/g302/pRGeSzo+XoCEIwou4QcLkHNCg/zgZ/IjJ45JTkpfw7wkGb9z4ljG0RTq0RPpJfD7ZaPhTPb9uh/huhadoiiKoiiKoiiKoiiKoiiKoiiKoqiH6Q8=",
+  "meta": {
+    "template": "WrongTurns",
+    "params": {
+      "size": "M",
+      "roadWidth": 8,
+      "verge": 2,
+      "branches": 3,
+      "minSeconds": 20,
+      "maxSeconds": 40
+    },
+    "seed": 1
+  }
+}

@@ -3,7 +3,7 @@ using Nitrogenesis.Sim.Io;
 using Nitrogenesis.Sim.Racing;
 
 /// <summary>
-/// The §9 learn-suite on the bundled tracks: default settings, fixed seeds, a generation budget per track, and
+/// The §9 learn-suite on the bundled tracks (hand-made and fixed-seed generated): default settings, fixed seeds, a generation budget per track, and
 /// the road check on grass_shortcut (see <see cref="LearnTest"/>). Every (track, seed) case must pass.
 /// </summary>
 /// <remarks>
@@ -25,6 +25,14 @@ internal static class LearnSuite
         ("labyrinth", 200, false),
         ("obstacle_field", 100, false),
         ("grass_shortcut", 100, true),
+        // The fixed-seed generated tracks (M5, SimBench make-tracks), with the §9 budgets of their templates; Mixed has none in
+        // §9 and gets the budget of its hardest pieces (wrong turns).
+        ("gen_sprint", 30, false),
+        ("gen_twisty", 100, false),
+        ("gen_wrong_turns", 150, false),
+        ("gen_labyrinth", 200, false),
+        ("gen_obstacle_field", 100, false),
+        ("gen_mixed", 150, false),
     ];
 
     /// <summary>Controls that must fail: (track, budget, road check, random search, grass speed fraction).</summary>
@@ -33,6 +41,7 @@ internal static class LearnSuite
         ("labyrinth", 200, false, true, 0.45f),
         ("obstacle_field", 100, false, true, 0.45f),
         ("grass_shortcut", 100, true, false, 1f),
+        ("gen_labyrinth", 200, false, true, 0.45f),
     ];
 
     /// <param name="threads">Simulation threads.</param>

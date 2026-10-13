@@ -30,14 +30,14 @@ public partial class EditorToolbar : PanelContainer
     private readonly Dictionary<CellType, PaintSwatch> _swatches = new();
     private HSlider _size = null!;
     private Label _sizeLabel = null!, _paintLabel = null!, _fileLabel = null!;
-    private Button _round = null!, _square = null!, _undo = null!, _redo = null!, _grid = null!, _test = null!;
+    private Button _round = null!, _square = null!, _undo = null!, _redo = null!, _grid = null!, _test = null!, _similar = null!;
 
     public event Action<EditorTool>? ToolChosen;
     public event Action<CellType>? PaintChosen;
     public event Action<int>? SizeChanged;
     public event Action<BrushShape>? ShapeChosen;
     public event Action? UndoPressed, RedoPressed, GridPressed, BackPressed, TestPressed, DrivePressed;
-    public event Action? NewPressed, OpenPressed, SavePressed, SaveAsPressed;
+    public event Action? NewPressed, OpenPressed, SavePressed, SaveAsPressed, GeneratePressed, SimilarPressed;
 
     public override void _Ready()
     {
@@ -62,6 +62,9 @@ public partial class EditorToolbar : PanelContainer
         file.AddChild(Small("Open", "Open a track (Ctrl+O)", () => OpenPressed?.Invoke()));
         file.AddChild(Small("Save", "Save (Ctrl+S)", () => SavePressed?.Invoke()));
         file.AddChild(Small("Save as", "Save under a new name (Ctrl+Shift+S)", () => SaveAsPressed?.Invoke()));
+        file.AddChild(Small("Generate", "Generate a track from a template", () => GeneratePressed?.Invoke()));
+        _similar = Small("Similar", "Generate a similar track: the same template and parameters, a new seed", () => SimilarPressed?.Invoke());
+        file.AddChild(_similar);
 
         box.AddChild(Heading("Tools"));
         var tools = new GridContainer { Columns = 2 };
@@ -160,6 +163,9 @@ public partial class EditorToolbar : PanelContainer
         _fileLabel.Text = dirty ? name + " •" : name;
         _fileLabel.TooltipText = "Track editor: " + (dirty ? name + " (unsaved changes)" : name);
     }
+
+    /// <summary>Similar is greyed out unless the open track was generated (its meta names a template).</summary>
+    public void SetSimilar(bool enabled) => _similar.Disabled = !enabled;
 
     /// <summary>Test is greyed out while a run is in progress.</summary>
     public void SetTesting(bool testing) => _test.Disabled = testing;

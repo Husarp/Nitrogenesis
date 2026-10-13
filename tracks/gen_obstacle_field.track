@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "name": "Obstacle field (generated)",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 22.5,
+    "y": 54.5,
+    "angleDeg": 0
+  },
+  "cells": "7Z1bluMgDEQR3ftf82T6NXFPbJBQCYFL3zmYWxDbiLKolcFgMBgMxuSQR2AaXgD8GIC288OXRzhL8NnUe1oF/oEfw6nDf9m/I6EAJ/BPEoy2//4c2QS4ov9WwBE/mQAt+mEF/sNPJUAH/ZcCW/J34g8I8AI/jwDd+HYBMvMr8M0C5OYvRSPAZvw6fJsAL/FzCCB6ftmLvxT4BMjLLxZ+2Ym/FPwEOLkK+VfEN/Sb/OTPyG/D13ec/GvxH9Ogt+N/Tn7fkP+5W+1fkJ/8i/J3dMun5+QnP/nJT37y61oRAfoxkvPLdWzOf778cJMgM387MT0uQWL+7g35EQXy8ncnZgZNGUn5lTvScmf+IVdGTv6ILdmd+O2ujE34jQL8XOftEAvylxH+BzJ45aJrxbQrYbOlfPLDV2748TfaUvbhL+QX8/9/B/4ywJ/s/h/1B9A8/85/koUfYkvomCJT139h/OhEywxfloK/BvNbjImIbclp/FVEtBpsxX+Z/w3nH7sB+Ob/I20pc55/DsaFvfe/yE/+kG6Rn/zkJz/iQtidO/KTX5H/wfC7vq7D+D9e6X35Ecs1LP+bH38LfGv+/rzFjvNfkbQBO3em3P9EVUuirvD8OyY+Li8kylISC/J/KfDyQrp05ZB1b9pr+QW/RBTSmL4sOeWXINNWUn50rj4/f4kb/mn8p/e/iCoyiZ9/sbM/3/o3dvan4w+996fkj8WP25YD8PvUEg2ypXTxB9n16wRbijO/1+drYbYEV37PUsKJ+BXfKnl9u7gSP6aQdpAtZYQfVUU82/OvUUWm1ilfLs/mh37cTX7yZ+GfUdyA/OS/M7/PPaenkagSWeQnv2/lwo6wr23dvejulSut+J1re6C5BVm5VJ2bjyqRSv4kAgxubUSV9iL/vflRAgzvbEdVtiO/QPBlzhEZSSbAa2NTwuE3jcvR59g7cBJVjwk9AX75XLsHLtjcAhOgye9TkCOsrKl2Yrb45cLWm272GwRo8MtVPQpJiG8RwNhx/BGJs98CpPlNR0J8red8wJgBPyJ1ogJ9/UYfkQs5udjTloI+Itn95Gp3Wwr4iGy3k8u7wfXdhh6R7nxyfUf4XKjWjGfYw8unpzzGnsFgMBiMheIP",
+  "meta": {
+    "template": "ObstacleField",
+    "params": {
+      "size": "M",
+      "roadWidth": 20,
+      "verge": 2,
+      "obstacles": 14,
+      "minSeconds": 20,
+      "maxSeconds": 40
+    },
+    "seed": 1
+  }
+}

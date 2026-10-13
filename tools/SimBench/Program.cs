@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using Nitrogenesis.Sim;
 using Nitrogenesis.Sim.Core;
+using Nitrogenesis.Sim.Gen;
 using Nitrogenesis.Sim.Io;
 using Nitrogenesis.Sim.Map;
 using Nitrogenesis.Sim.Racing;
 
 // SimBench: headless tools for the simulation (PLAN §2, §9).
-//   make-tracks [dir]   write the bundled hand-made tracks (default: ./tracks) and validate them
+//   make-tracks [dir]   write the bundled hand-made tracks (default: ./tracks) and validate them, then the fixed-seed
+//                       generated tracks (gen_*.track: every template with its defaults from seed 1, PLAN §2)
 //   reference [dir]     run the reference driver on every .track in dir (default: ./tracks)
 //   train --track X --gens N [--pop P] [--threads T] [--seed S]
 //                       train with default settings and print every generation
@@ -23,6 +25,11 @@ using Nitrogenesis.Sim.Racing;
 //   headless [--track X] [--pop P] [--threads T] [--gens G] [--save yes]
 //                       "Train to generation G" through the training host, as the app runs it without visuals:
 //                       generations/s with the history (and with --save yes, saving continuously)
+//   gen --template NAME [--seed S] [--size S|M|L] [--out FILE]
+//                       generate a track with the template's defaults (retrying the next seeds, PLAN §7) and save it
+//   gen-check [--seeds N] [--from S] [--template NAME] [--size S|M|L] [--verbose yes]
+//                       M5 acceptance: N seeds (default 50, from 1) per template, share valid on the first try (≥ 90 %
+//                       each), reference times and problems; exits 1 when a template is under 90 %
 //   kill-test [--rounds N] [--gens G]
 //                       M3 acceptance: a child process trains and saves all the time and is killed N times (default
 //                       30) at random moments; every kill must leave a session that loads, and the final run (to
@@ -60,6 +67,12 @@ try
                 options.Int("gens", 100), options.Text("save") is "yes" or "true");
         case "kill-test":
             return KillTest.Run(options.Int("rounds", 30), options.Int("gens", 400));
+        case "gen":
+            return Generate(Enum.Parse<TrackTemplate>(options.Text("template") ?? throw new ArgumentException("--template is required."), true),
+                options.ULong("seed", 1), options.Text("size"), options.Text("out"));
+        case "gen-check":
+            return GenCheck.Run(options.Int("seeds", 50), options.ULong("from", 1), options.Text("template"),
+                options.Text("size") is { } size ? Enum.Parse<MapSize>(size, true) : null, options.Text("verbose") is "yes" or "true");
         case "save-stress":
             return KillTest.Child(options.Text("dir") ?? throw new ArgumentException("--dir is required."), options.Int("gens", 400));
     }
@@ -69,7 +82,8 @@ catch (ArgumentException e)
     Console.Error.WriteLine(e.Message);
 }
 Console.Error.WriteLine("Usage: SimBench make-tracks [dir] | reference [dir] | train --track X --gens N [--pop P] [--threads T] [--seed S]" +
-                        " | bench [--track X] [--seconds S] [--repeats R] | view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G] | learn-suite [--only NAME] [--threads T] | headless [--track X] [--pop P] [--threads T] [--gens G] [--save yes] | kill-test [--rounds N] [--gens G]");
+                        " | bench [--track X] [--seconds S] [--repeats R] | view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G] | learn-suite [--only NAME] [--threads T] | headless [--track X] [--pop P] [--threads T] [--gens G] [--save yes] | kill-test [--rounds N] [--gens G]" +
+                        " | gen --template NAME [--seed S] [--size S|M|L] [--out FILE] | gen-check [--seeds N] [--from S] [--template NAME] [--size S|M|L] [--verbose yes]");
 return 2;
 
 static int MakeTracks(string dir)
@@ -93,7 +107,43 @@ static int MakeTracks(string dir)
         Console.WriteLine($"{(valid ? "ok  " : "FAIL")} {file,-22} {solvable,-17} start→finish {shortcut.WithGrass,6:F1} " +
                           $"(road only {shortcut.RoadOnly,6:F1})  clearance+field {ms,5:F1} ms  hash {TrackHash.Compute(track)[..12]}");
     }
+    // The fixed-seed generated tracks (one per template, defaults, from seed 1), bundled and used by the learn-suite.
+    (string File, TrackTemplate Template)[] generated =
+    [
+        ("gen_sprint.track", TrackTemplate.Sprint),
+        ("gen_twisty.track", TrackTemplate.Twisty),
+        ("gen_labyrinth.track", TrackTemplate.Labyrinth),
+        ("gen_wrong_turns.track", TrackTemplate.WrongTurns),
+        ("gen_obstacle_field.track", TrackTemplate.ObstacleField),
+        ("gen_mixed.track", TrackTemplate.Mixed),
+    ];
+    foreach (var (file, template) in generated)
+    {
+        var result = TrackGenerator.GenerateValid(template, GeneratorParams.Defaults(template), 1);
+        ok &= result.Track is not null;
+        if (result.Track is { } track)
+        {
+            track.Name = $"{Templates.Name(template)} (generated)";
+            TrackFile.Save(track, Path.Combine(dir, file));
+        }
+        Console.WriteLine($"{(result.Track is not null ? "ok  " : "FAIL")} {file,-22} {result.Summary}" +
+                          (result.Track is { } t ? $"  hash {TrackHash.Compute(t)[..12]}" : ""));
+    }
     return ok ? 0 : 1;
+}
+
+static int Generate(TrackTemplate template, ulong seed, string? size, string? output)
+{
+    var p = GeneratorParams.Defaults(template);
+    if (size is not null) p = p with { Size = Enum.Parse<MapSize>(size, true) };
+    var watch = Stopwatch.StartNew();
+    var result = TrackGenerator.GenerateValid(template, p, seed);
+    Console.WriteLine($"{Templates.Name(template)} from seed {seed}: {result.Summary} ({watch.Elapsed.TotalMilliseconds:F0} ms)");
+    if (result.Track is not { } track) return 1;
+    string path = output ?? $"{template.ToString().ToLowerInvariant()}-{result.Seed}{TrackFile.Extension}";
+    TrackFile.Save(track, path);
+    Console.WriteLine($"saved {path}  hash {TrackHash.Compute(track)[..12]}");
+    return 0;
 }
 
 static int Reference(string dir)

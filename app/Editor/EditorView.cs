@@ -31,6 +31,7 @@ public partial class EditorView : Control
     private TestJob? _job;
     private TestOutcome? _tested;
     private EditorFileDialogs _files = null!;
+    private EditorGenerator _generator = null!;
     private string _shownTitle = "";
 
     /// <summary>The document being edited. Replaced by <see cref="ReplaceDocument"/> (then <see cref="DocumentReplaced"/> is raised).</summary>
@@ -97,6 +98,9 @@ public partial class EditorView : Control
         _toolbar.OpenPressed += _files.AskOpen;
         _toolbar.SavePressed += () => _files.Save();
         _toolbar.SaveAsPressed += () => _files.SaveAs();
+        _generator = new EditorGenerator(this);
+        _toolbar.GeneratePressed += _generator.AskGenerate;
+        _toolbar.SimilarPressed += _generator.AskSimilar;
 
         var right = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         right.AddThemeConstantOverride("separation", 0);
@@ -260,6 +264,7 @@ public partial class EditorView : Control
     public override void _Process(double delta)
     {
         if (_bench is not null) RunBench(delta);
+        _generator.Poll();
         PollTest();
         string title = _doc.IsDirty ? _doc.Name + "\u0001" : _doc.Name;
         if (title != _shownTitle)
@@ -271,6 +276,7 @@ public partial class EditorView : Control
         {
             _toolbarDirty = false;
             _toolbar.Refresh(_tool, _paint, _doc.BrushSize, _doc.BrushShape, _grid, _doc.CanUndo, _doc.CanRedo);
+            _toolbar.SetSimilar(_generator.CurrentTemplate is not null);
         }
     }
 
@@ -407,8 +413,8 @@ public partial class EditorView : Control
 
     // ---------------------------------------------------------------- debug: --do verbs
 
-    /// <summary>True while a debug benchmark stroke is running (the script waits).</summary>
-    public bool DebugBusy => _bench is not null;
+    /// <summary>True while a debug benchmark stroke runs or a track is being generated (the script waits).</summary>
+    public bool DebugBusy => _bench is not null || _generator.Running;
 
     /// <summary>
     /// A --do step for the editor (Main handles wait, shot, quit, menu first). Verbs: <c>tool:brush|line|rect|fill|eraser|start</c>,
@@ -416,7 +422,8 @@ public partial class EditorView : Control
     /// <c>line:x0,y0,x1,y1</c>, <c>rect:…</c>, <c>fill:x,y</c>, <c>start:x,y,angle</c>, <c>undo</c>, <c>redo</c>, <c>grid:on|off</c>,
     /// <c>zoom:PIXELS_PER_CELL</c>, <c>center:x,y</c>, <c>fit</c>, <c>hover:x,y</c>, <c>drag-preview:tool,x0,y0,x1,y1</c>, <c>newmap:S|M|L</c> (no question), <c>new:S|M|L</c>, <c>new-dialog</c>, <c>open:USERTRACK</c>, <c>open-bundled:NAME</c>, <c>open-dialog</c>, <c>save</c>, <c>save-as:NAME</c>, <c>save-as-dialog[:TEXT]</c> (these go through the same code as the buttons, including the unsaved-changes and overwrite questions; Main's <c>modal-button:LABEL</c> answers them),
     /// <c>mouse:down|move|up|wheelup|wheeldown,x,y[,left|right|middle]</c> (a real injected mouse event at the centre of cell x,y),
-    /// <c>bench[:CELLS_PER_FRAME]</c> (a long serpentine stroke with injected mouse moves; prints frame and flush times), <c>test</c> (the Test button; later shots wait for the result), <c>drive</c> (the Drive button), <c>state</c>.
+    /// <c>bench[:CELLS_PER_FRAME]</c> (a long serpentine stroke with injected mouse moves; prints frame and flush times), <c>test</c> (the Test button; later shots wait for the result), <c>drive</c> (the Drive button),
+    /// <c>generate:TEMPLATE[,SEED[,S|M|L]]</c> (the template's defaults, random seed if none; later steps wait for it), <c>generate-dialog</c>, <c>similar</c>, <c>state</c>.
     /// </summary>
     public string? DebugDo(string verb, string arg)
     {
@@ -487,6 +494,15 @@ public partial class EditorView : Control
                 case "mouse": return DebugMouse(arg);
                 case "bench": StartBench(arg.Length == 0 ? 16 : int.Parse(arg, inv)); return null;
                 case "test": Test(); return null;
+                case "generate":
+                {
+                    string[] p = arg.Split(',');
+                    if (!Enum.TryParse<Nitrogenesis.Sim.Gen.TrackTemplate>(p[0], true, out var template)) return $"unknown template '{p[0]}'";
+                    _generator.DebugGenerate(template, p.Length > 1 ? ulong.Parse(p[1], inv) : null, p.Length > 2 ? Enum.Parse<MapSize>(p[2], true) : MapSize.M);
+                    return null;
+                }
+                case "generate-dialog": _generator.AskGenerate(); return null;
+                case "similar": _generator.AskSimilar(); return null;
                 case "drive": Drive(); return null;
                 case "state": GD.Print(State()); return null;
             }
@@ -520,7 +536,8 @@ public partial class EditorView : Control
         return string.Create(CultureInfo.InvariantCulture,
             $"editor state: {g.Width}x{g.Height} rev={_doc.Revision} undo={_doc.UndoCount} redo={_doc.RedoCount} dirty={_doc.IsDirty} " +
             $"name='{_doc.Name}' file={(FilePath is null ? "-" : System.IO.Path.GetFileName(FilePath))} start=({s.X},{s.Y},{s.AngleDeg}) tool={_tool} paint={_doc.PaintType} size={_doc.BrushSize} shape={_doc.BrushShape} " +
-            $"zoom={_canvas.PixelsPerCell:0.00}px/cell cells={Crc32.Compute(g.Cells):X8} test={(_tested is null ? (TestRunning ? "running" : "none") : _tested.Kind)}");
+            $"zoom={_canvas.PixelsPerCell:0.00}px/cell cells={Crc32.Compute(g.Cells):X8} test={(_tested is null ? (TestRunning ? "running" : "none") : _tested.Kind)} " +
+            $"meta={_doc.Meta.Template ?? "-"}/{_doc.Meta.Seed?.ToString(CultureInfo.InvariantCulture) ?? "-"}");
     }
 
     private Vector2 _mouseLast;

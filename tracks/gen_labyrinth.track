@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "name": "Labyrinth (generated)",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 232.5,
+    "y": 122.5,
+    "angleDeg": 90
+  },
+  "cells": "7dzbjsMgDEVRHPX/v3kmmvtUhJvt2GWf1yqBhVQCpulxEEIIIYQQQgghhBBCriNn9u2vSK4BUO7v+61KKXkGQLm/H7fLMwDa/f283XnDJH7d/uLHjx8/fvz48ePHjx8/fvz48ePHjx8/fvz48ePH/6L+P4l34P0VH79E5Vv5v/M4E2cA5LmHDv4wA1DjW/sfYfwFP/6Nv/+3+MPM/27+oM//5/7ttf5z9KdY7+PHjx+/oT/q/O/kD/v89/EHex/A2x/tfQB/f6z5ED9+/Pjx48ePHz9+/Ev9uzxPNqgHL12v75cpv9z0vr66v3GeXv10YbhXrtf2t87T6x+vtTd/vba/TPmLUv/x44/ol7398lP+3cRfeb5rnzdn8R/7+UO0hx8/fvwB53/b5219e927P7d+/rv6Zbw+Ybv+s95v1LbXvfUJ6/W/r/9X+531Cev9n7O/d/+JH79L/c+6vcn6o1v917q9yfqzY/3fur2p8wfH8x/r9qbOn7zP/6K1hx8/fvx27391Po8G0+Gv1Zu95n9Tv0z71Z//OueBY2nXF2rnTf9+P5DU364vVNsX3fX/Tf4y7Xeaj/Fv6pe5epyaX1zrkZ0D0K7HKvlb7dv/PnO0Hj+aVv+n1wuH5QC0B0jLf8yuF48j4f91jfYfP378+AP7e+f/y/39wvWx+b37+6z+2fXh9fqv//qk/LK6v4j+/2Sr57348b/w93+1viC55//V+oKkWf6IUX0h7P8zD3c/OZ/cljc=",
+  "meta": {
+    "template": "Labyrinth",
+    "params": {
+      "size": "M",
+      "roadWidth": 7,
+      "verge": 2,
+      "deadEndLength": 2,
+      "minSeconds": 20,
+      "maxSeconds": 40
+    },
+    "seed": 1
+  }
+}

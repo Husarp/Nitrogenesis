@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "name": "Twisty (generated)",
+  "width": 256,
+  "height": 144,
+  "start": {
+    "x": 241.5,
+    "y": 32,
+    "angleDeg": 270
+  },
+  "cells": "7ZzRTsMwDEWbqv//zSAEbEDXOg65tuLjx80KOSZrnWsn+45hGIZhGCaw1nJ6SdAflslLCr9tVxPSewnxtyc7n47eS4e//bKT6ei94vBPpqP3isT/Mx29Vyz+r+novXT82/ZqOpFe8AfjP09H7xXA/0hJruYs8tLzP5LRqzmrvCL4X30S4QW//uef6CP4o5a/cYEaMbxjwa+QsQZeUA7+nrFkMpY3Qenm7xtLI2MNJKj9/F1jCWUs3wbF+hh3jiWVsdbgH5CeHAKFnd81VnoZy5zG+MbSylgOgdKexhnW5bfHyL/fL714BOqONPb+uRTK7ytQ9KTxt++lr+/bwPL3SE8DBaqubcxtXvLx5UgNyC09eQuUvdu4m7x0tAbok54G9hKubezlX2wRMs5k4SC9jLUIv15ngX8JGWv2Lw7+eV1KP0xeZ5GXcdqV6ets2jLeuWYVWWeVlnFN6OI6u7CMb6VflL8HX9dnI2vjceJP77MStXG58af32Wna+Pz40/ssJW2c5id/QJ+toI3X9M4P67Oe38Z9qlmdWFif/fThb/ETnLOYueOJ7A7dE5xLKc0f2hwJP+sf/jz8CU7K7Qka1EsFoadmWyIA4ccFU5xQqROARgAIAAFIclwwxwH1cgnhXc92oRCU3hFGHxdkRwg/khD8/ADgRxJDEkMSQxJDEkMQIQAEAEkMSQxJDEkMSYwdIfxIQvCz/uHn/Uf+Q/7L/of9L/oH+OCjf1P/oP5F/ZP6N7s9+BF74Gf9w//fVwIsnRZYr4RYNQTWG2GOd6scgOP4jEBp/mNF/laa3xiAo3gA1sW3BWBlfsuVkMs+/41Xgi77/jddCVtFGSsNj2EYhmEYto69AQ==",
+  "meta": {
+    "template": "Twisty",
+    "params": {
+      "size": "M",
+      "roadWidth": 8,
+      "verge": 2,
+      "minSeconds": 20,
+      "maxSeconds": 40
+    },
+    "seed": 1
+  }
+}
