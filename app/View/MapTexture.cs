@@ -22,15 +22,39 @@ public static class MapTexture
     /// <summary>Start arrow colour (the UI accent).</summary>
     public static Color StartMark => Ui.UiTheme.Accent;
 
-    public static ImageTexture Create(Grid grid, TrackStart? start = null)
+    public static ImageTexture Create(Grid grid, TrackStart? start = null) => ImageTexture.CreateFromImage(CreateImage(grid, start));
+
+    /// <summary>The map's pixels as an image (the editor keeps it and repaints parts of it, see <see cref="Repaint"/>).</summary>
+    public static Image CreateImage(Grid grid, TrackStart? start = null)
     {
         int w = grid.Width, h = grid.Height;
         byte[] rgb = new byte[w * h * 3];
-        for (int y = 0; y < h; y++)
+        WriteCells(grid, 0, 0, w, h, rgb);
+        if (start is { } s) PaintStart(rgb, w, h, s);
+        return Image.CreateFromData(w, h, false, Image.Format.Rgb8, rgb);
+    }
+
+    /// <summary>Repaints only the cells of <paramref name="rect"/> (clipped to the grid) in an image from <see cref="CreateImage"/>; the caller updates the texture.</summary>
+    public static void Repaint(Image image, Grid grid, DirtyRect rect)
+    {
+        int x0 = Mathf.Max(rect.X, 0), y0 = Mathf.Max(rect.Y, 0);
+        int x1 = Mathf.Min(rect.X + rect.W, grid.Width), y1 = Mathf.Min(rect.Y + rect.H, grid.Height);
+        int w = x1 - x0, h = y1 - y0;
+        if (w <= 0 || h <= 0) return;
+        byte[] rgb = new byte[w * h * 3];
+        WriteCells(grid, x0, y0, w, h, rgb);
+        using var patch = Image.CreateFromData(w, h, false, Image.Format.Rgb8, rgb);
+        image.BlitRect(patch, new Rect2I(0, 0, w, h), new Vector2I(x0, y0));
+    }
+
+    /// <summary>Writes the colours of the cells x0..x0+w-1 × y0..y0+h-1 into <paramref name="rgb"/> (row-major, 3 bytes each, region-local).</summary>
+    private static void WriteCells(Grid grid, int x0, int y0, int w, int h, byte[] rgb)
+    {
+        for (int y = y0; y < y0 + h; y++)
         {
-            for (int x = 0; x < w; x++)
+            for (int x = x0; x < x0 + w; x++)
             {
-                var type = (CellType)grid.Cells[y * w + x];
+                var type = (CellType)grid.Cells[y * grid.Width + x];
                 Color c = type switch
                 {
                     CellType.Road => Road,
@@ -40,14 +64,12 @@ public static class MapTexture
                     _ => Wall,
                 };
                 if (type is CellType.Road or CellType.Grass or CellType.Wall) c = Jitter(c, x, y, type == CellType.Grass ? 0.06f : 0.03f);
-                int o = (y * w + x) * 3;
+                int o = ((y - y0) * w + (x - x0)) * 3;
                 rgb[o] = (byte)(c.R * 255f + 0.5f);
                 rgb[o + 1] = (byte)(c.G * 255f + 0.5f);
                 rgb[o + 2] = (byte)(c.B * 255f + 0.5f);
             }
         }
-        if (start is { } s) PaintStart(rgb, w, h, s);
-        return ImageTexture.CreateFromImage(Image.CreateFromData(w, h, false, Image.Format.Rgb8, rgb));
     }
 
     /// <summary>

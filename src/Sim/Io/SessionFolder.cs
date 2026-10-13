@@ -3,25 +3,51 @@ using Nitrogenesis.Sim.History;
 
 namespace Nitrogenesis.Sim.Io;
 
+/// <summary>What <see cref="SessionFolder.Load"/> read.</summary>
+/// <param name="Header">The header (from the backup when the main one was damaged).</param>
+/// <param name="History">Each branch's stored generations in [first, end), oldest first.</param>
+/// <param name="Warnings">What could not be read, in words for the UI.</param>
+/// <param name="FromBackup">header.json was missing or damaged and the previous save's header was used.</param>
+public sealed record LoadedSession(SessionHeader Header, IReadOnlyDictionary<string, List<HistoryEntry>> History,
+    IReadOnlyList<string> Warnings, bool FromBackup);
+
+/// <summary>Thrown by the test hook <see cref="SessionFolder.FaultInjection"/> to stop a save at a chosen step, as if the app died there.</summary>
+public sealed class SimulatedCrashException(string step) : Exception($"Simulated crash at: {step}");
+
+/// <summary>The session is open in another window (its lock file is held).</summary>
+public sealed class SessionLockedException(string message, Exception inner) : IOException(message, inner);
+
+/// <summary>The session on disk is no longer the save a loaded session came from (another window saved, renamed or deleted it).</summary>
+public sealed class SessionChangedException(string message) : IOException(message);
+
 /// <summary>
 /// A session on disk (PLAN §5.1): the folder <c>sessions\&lt;name&gt;\</c> with <c>header.json</c> and
 /// <c>history\&lt;branch&gt;\gen-&lt;from&gt;-&lt;to&gt;.bin</c> chunks of up to <see cref="ChunkSize"/> records.
 /// </summary>
 /// <remarks>
-/// <para>Chunk k of a branch holds generations 25k … 25k+24 (from the branch's first generation when it starts
-/// inside the chunk). A complete chunk is written once and never rewritten. The newest records that do not fill
-/// a chunk yet are saved as a shorter chunk with the same <c>from</c>; a later save writes the longer file first
-/// and only then deletes the shorter one, so a crash at any point leaves a readable history (on load the longest
-/// file per <c>from</c> wins).</para>
-/// <para>Every file is written to a temp file first and then moved into place (the header with
-/// <see cref="File.Replace(string, string, string?)"/>), so a killed autosave never leaves a half-written file.</para>
+/// <para><b>Crash safety.</b> Every file is written to a temp file, flushed to disk and then moved over the old
+/// one (the header with <see cref="File.Replace(string, string, string?)"/>, keeping the previous header as
+/// <c>header.json.bak</c>), so a file is always either the old or the new complete version. A save writes the
+/// history chunks first and the header last: the header is the commit point. It lists each branch's history end,
+/// and on load generations at or after it are ignored, so chunks written by a save that died before its header
+/// do no harm. Chunk files and the header's population carry CRC-32s; a damaged header falls back to the backup,
+/// a damaged chunk leaves a gap (reported, the rest loads).</para>
+/// <para><b>Chunks.</b> Window w of a branch holds generations 25w … 25w+24 (from the branch's first generation
+/// when it starts inside the window). A save rewrites only the windows with new generations or thinned snapshots
+/// (PLAN §5.1: "Thinning rewrites a chunk without its snapshots"); a complete, unthinned window is written once.
+/// Each consecutive run of a window's records is one file named by its range; after writing it, the other files of
+/// the window whose committed generations it covers are deleted (shorter partial chunks, leftovers of a save that
+/// never committed). On load, files with a lower start win, then the longer one.</para>
 /// </remarks>
 public sealed class SessionFolder
 {
     public const string HeaderFileName = "header.json";
+    public const string BackupSuffix = ".bak";
+    public const string LockFileName = "session.lock";
     public const string HistoryFolderName = "history";
     public const int ChunkSize = 25;
     private const string TempSuffix = ".tmp";
+    private bool _headerDamaged;
 
     public SessionFolder(string path)
     {
@@ -30,9 +56,19 @@ public sealed class SessionFolder
     }
 
     public string Path { get; }
+    /// <summary>The session's name: its folder name.</summary>
+    public string Name => System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(Path));
     public string HeaderPath => System.IO.Path.Combine(Path, HeaderFileName);
+    public string BackupHeaderPath => HeaderPath + BackupSuffix;
 
-    public bool Exists => File.Exists(HeaderPath);
+    public bool Exists => File.Exists(HeaderPath) || File.Exists(BackupHeaderPath);
+
+    /// <summary>
+    /// Test hook: called with a description at every step of a save (before a temp file is created, after half and
+    /// after all of its bytes, after each move and delete). Returning true throws <see cref="SimulatedCrashException"/>
+    /// right there, leaving the files as a killed process would.
+    /// </summary>
+    public Func<string, bool>? FaultInjection { get; set; }
 
     public string BranchFolder(string branch) => System.IO.Path.Combine(Path, HistoryFolderName, CheckBranchName(branch));
 
@@ -40,84 +76,284 @@ public sealed class SessionFolder
     public static string ChunkFileName(int from, int to) =>
         string.Create(CultureInfo.InvariantCulture, $"gen-{from}-{to}.bin");
 
-    /// <summary>Writes header.json atomically: a temp file, then <see cref="File.Replace(string, string, string?)"/> (a move the first time).</summary>
+    // ---------------------------------------------------------------- saving
+
+    /// <summary>
+    /// Writes a save: clears folders of branches never saved before, writes every planned chunk window, then the
+    /// header (the commit point). Any failure leaves the previous save loadable.
+    /// </summary>
+    public void Save(SavePlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        Directory.CreateDirectory(Path);
+        foreach (string branch in plan.NewBranches)
+        {
+            string folder = BranchFolder(branch);
+            if (!Directory.Exists(folder)) continue;
+            Directory.Delete(folder, recursive: true); // uncommitted leftovers of a fork whose header never got written
+            Step("rmdir " + folder);
+        }
+        foreach (var window in plan.Windows) WriteWindow(window);
+        if (plan.ReplacesDamagedHeader) _headerDamaged = true;
+        SaveHeader(plan.Header);
+    }
+
+    /// <summary>
+    /// Writes header.json atomically (temp file, flush, then <see cref="File.Replace(string, string, string?)"/>
+    /// keeping the previous header as the backup). After a load that had to use the backup, the damaged header is
+    /// deleted first, so it never replaces the good backup.
+    /// </summary>
     public void SaveHeader(SessionHeader header)
     {
         ArgumentNullException.ThrowIfNull(header);
         Directory.CreateDirectory(Path);
-        string temp = HeaderPath + TempSuffix;
-        File.WriteAllText(temp, header.Serialize());
-        if (File.Exists(HeaderPath)) File.Replace(temp, HeaderPath, null);
-        else File.Move(temp, HeaderPath);
+        byte[] data = System.Text.Encoding.UTF8.GetBytes(header.Serialize());
+        if (_headerDamaged && File.Exists(HeaderPath))
+        {
+            File.Delete(HeaderPath);
+            Step("delete " + HeaderPath);
+        }
+        WriteAtomically(HeaderPath, data, BackupHeaderPath);
+        _headerDamaged = false;
     }
 
-    /// <exception cref="InvalidDataException">The header is missing or not valid.</exception>
-    public SessionHeader LoadHeader()
+    /// <summary>Writes one chunk window: a file per consecutive run of its records, then deletes the files they supersede.</summary>
+    public void WriteWindow(WindowWrite window)
     {
-        if (!File.Exists(HeaderPath)) throw new InvalidDataException($"No session header in {Path}.");
-        return SessionHeader.Deserialize(File.ReadAllText(HeaderPath));
+        ArgumentNullException.ThrowIfNull(window);
+        string folder = BranchFolder(window.Branch);
+        Directory.CreateDirectory(folder);
+        int lo = Math.Max(window.Window * ChunkSize, window.First), hi = Math.Min(window.Window * ChunkSize + ChunkSize - 1, window.End - 1);
+        var present = new HashSet<int>();
+        foreach (var e in window.Entries)
+        {
+            if (e.Generation < lo || e.Generation > hi) throw new ArgumentException($"Generation {e.Generation} is outside window {window.Window}.", nameof(window));
+            present.Add(e.Generation);
+        }
+        var written = new HashSet<string>(StringComparer.Ordinal);
+        int i = 0;
+        while (i < window.Entries.Count)
+        {
+            int j = i;
+            while (j + 1 < window.Entries.Count && window.Entries[j + 1].Generation == window.Entries[j].Generation + 1) j++;
+            var run = new HistoryEntry[j - i + 1];
+            for (int k = i; k <= j; k++) run[k - i] = window.Entries[k];
+            string name = ChunkFileName(run[0].Generation, run[^1].Generation);
+            WriteAtomically(System.IO.Path.Combine(folder, name), HistoryChunk.Encode(run));
+            written.Add(name);
+            i = j + 1;
+        }
+        foreach (var file in ListChunks(folder))
+        {
+            if (file.From / ChunkSize != window.Window || written.Contains(System.IO.Path.GetFileName(file.Path))) continue;
+            int from = Math.Max(file.From, window.First), to = Math.Min(file.To, window.End - 1);
+            bool covered = true;
+            for (int g = from; g <= to && covered; g++) covered = present.Contains(g);
+            if (!covered) continue; // it still holds generations we do not have (a damaged file): keep it
+            File.Delete(file.Path);
+            Step("delete " + file.Path);
+        }
+    }
+
+    // ---------------------------------------------------------------- loading
+
+    /// <summary>
+    /// Reads the session: the header (or its backup when it is missing or damaged) and every branch's history up to
+    /// the header's history end. Damaged chunk files are skipped and reported in <see cref="LoadedSession.Warnings"/>.
+    /// </summary>
+    /// <param name="backupOnly">Read only the backup header (the main one was readable but inconsistent).</param>
+    /// <param name="problem">Why the backup is used, for the warning.</param>
+    /// <exception cref="InvalidDataException">Neither the header nor its backup can be read.</exception>
+    public LoadedSession Load(bool backupOnly = false, string? problem = null)
+    {
+        var warnings = new List<string>();
+        SessionHeader header;
+        bool fromBackup = backupOnly;
+        if (backupOnly)
+        {
+            if (!File.Exists(BackupHeaderPath)) throw new InvalidDataException($"No backup header in {Path}.");
+            header = SessionHeader.Deserialize(File.ReadAllText(BackupHeaderPath));
+        }
+        else
+        {
+            header = LoadHeader(out fromBackup, out problem);
+        }
+        if (fromBackup)
+        {
+            _headerDamaged = true;
+            warnings.Add($"The newest save of this session was damaged ({problem}); the save before it was loaded.");
+        }
+        var history = new Dictionary<string, List<HistoryEntry>>(StringComparer.Ordinal);
+        foreach (var b in header.Branches)
+        {
+            int end = header.HistoryEnds.TryGetValue(b.Name, out int e) ? e : int.MaxValue;
+            history[b.Name] = LoadBranch(b.Name, b.FirstGeneration, end, warnings);
+        }
+        return new LoadedSession(header, history, warnings, fromBackup);
+    }
+
+    /// <summary>The header (or its backup when the header is missing or damaged).</summary>
+    /// <exception cref="InvalidDataException">Neither can be read.</exception>
+    public SessionHeader LoadHeader() => LoadHeader(out _, out _);
+
+    private SessionHeader LoadHeader(out bool fromBackup, out string? problem)
+    {
+        fromBackup = false;
+        problem = null;
+        try
+        {
+            if (File.Exists(HeaderPath)) return SessionHeader.Deserialize(File.ReadAllText(HeaderPath));
+            problem = "header.json is missing";
+        }
+        catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            problem = e.Message;
+        }
+        if (!File.Exists(BackupHeaderPath)) throw new InvalidDataException($"No readable session header in {Path}: {problem}");
+        try
+        {
+            var header = SessionHeader.Deserialize(File.ReadAllText(BackupHeaderPath));
+            fromBackup = true;
+            return header;
+        }
+        catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException($"No readable session header in {Path}: {problem}; backup: {e.Message}", e);
+        }
     }
 
     /// <summary>
-    /// Saves a branch's history: every chunk not on disk yet, plus the newest partial chunk. Chunks already
-    /// written are left alone. <paramref name="records"/> are consecutive generations, oldest first, from the
-    /// branch's first generation on (or at least from the start of the first chunk not saved yet).
+    /// A branch's stored generations in [<paramref name="first"/>, <paramref name="end"/>), oldest first. Files are
+    /// read in order of start (lower first), then length (longer first); the first file that holds a generation wins.
+    /// Missing generations (a damaged or missing file) are reported in <paramref name="warnings"/>.
     /// </summary>
-    public void SaveHistory(string branch, IReadOnlyList<GenerationRecord> records)
+    public List<HistoryEntry> LoadBranch(string branch, int first, int end, List<string> warnings)
     {
-        ArgumentNullException.ThrowIfNull(records);
+        ArgumentNullException.ThrowIfNull(warnings);
         string folder = BranchFolder(branch);
-        Directory.CreateDirectory(folder);
-        Dictionary<int, List<int>> existing = ListChunks(folder);
-
-        int i = 0;
-        while (i < records.Count)
+        var result = new SortedDictionary<int, HistoryEntry>();
+        var damaged = new List<string>();
+        if (Directory.Exists(folder))
         {
-            int from = records[i].Generation;
-            int chunkEnd = (from / ChunkSize + 1) * ChunkSize - 1;
-            int j = i;
-            while (j + 1 < records.Count && records[j + 1].Generation <= chunkEnd)
+            var files = ListChunks(folder).Where(f => f.From < end && f.To >= first).OrderBy(f => f.From).ThenByDescending(f => f.To);
+            foreach (var file in files)
             {
-                if (records[j + 1].Generation != records[j].Generation + 1)
-                    throw new ArgumentException("Records must be consecutive generations.", nameof(records));
-                j++;
+                int lo = Math.Max(file.From, first), hi = Math.Min(file.To, end - 1);
+                bool needed = false;
+                for (int g = lo; g <= hi && !needed; g++) needed = !result.ContainsKey(g);
+                if (!needed) continue;
+                List<HistoryEntry> entries;
+                try
+                {
+                    entries = HistoryChunk.Decode(File.ReadAllBytes(file.Path));
+                    if (entries[0].Generation != file.From || entries[^1].Generation != file.To)
+                        throw new InvalidDataException("it holds other generations than its name says");
+                }
+                catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException)
+                {
+                    damaged.Add($"{System.IO.Path.GetFileName(file.Path)} ({e.Message})");
+                    continue;
+                }
+                foreach (var entry in entries)
+                    if (entry.Generation >= lo && entry.Generation <= hi) result.TryAdd(entry.Generation, entry);
             }
-            int to = records[j].Generation;
-            existing.TryGetValue(from, out List<int>? tos);
-            if (tos is null || !tos.Contains(to))
+        }
+        int expectedEnd = end != int.MaxValue ? end : result.Count > 0 ? result.Keys.Max() + 1 : first;
+        var missing = new List<string>();
+        int? gapStart = null;
+        for (int g = first; g <= expectedEnd; g++)
+        {
+            bool have = g < expectedEnd && result.ContainsKey(g);
+            if (!have && g < expectedEnd) gapStart ??= g;
+            else if (gapStart is int s)
             {
-                if (tos is not null && tos.Max() > to)
-                    throw new InvalidOperationException($"History of '{branch}' on disk already goes past generation {to}.");
-                var chunk = new GenerationRecord[j - i + 1];
-                for (int k = i; k <= j; k++) chunk[k - i] = records[k];
-                WriteAtomically(System.IO.Path.Combine(folder, ChunkFileName(from, to)), HistoryChunk.Encode(chunk));
-                // The longer file is safely on disk: drop the shorter ones it replaces.
-                if (tos is not null)
-                    foreach (int shorter in tos)
-                        File.Delete(System.IO.Path.Combine(folder, ChunkFileName(from, shorter)));
+                missing.Add(s == g - 1 ? $"{s}" : $"{s}–{g - 1}");
+                gapStart = null;
             }
-            i = j + 1;
+        }
+        if (missing.Count > 0)
+            warnings.Add($"Branch '{branch}': generations {string.Join(", ", missing)} could not be read and are missing from its history" +
+                         (damaged.Count > 0 ? $" (damaged: {string.Join("; ", damaged)})." : "."));
+        return [.. result.Values];
+    }
+
+    // ---------------------------------------------------------------- lock
+
+    /// <summary>
+    /// Holds the session's lock file open with no sharing while the session is trained, so a second window cannot
+    /// open it too (the OS releases it when the process ends, also after a crash).
+    /// </summary>
+    /// <exception cref="SessionLockedException">Another window has the session open.</exception>
+    public IDisposable AcquireLock()
+    {
+        Directory.CreateDirectory(Path);
+        try
+        {
+            return new FileStream(System.IO.Path.Combine(Path, LockFileName), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException e) when (e is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            throw new SessionLockedException($"The session '{Name}' is open in another Nitrogenesis window.", e);
         }
     }
 
-    /// <summary>Loads a branch's history, oldest first (empty when there is none).</summary>
-    /// <exception cref="InvalidDataException">A chunk is damaged or generations are missing.</exception>
-    public List<GenerationRecord> LoadHistory(string branch)
+    /// <summary>
+    /// <see cref="AcquireLock"/> for a loaded session: succeeds only while the save on disk is still the one it was loaded
+    /// from (the header with <paramref name="savedAtUtc"/>; the backup header if the load had to use it). Otherwise
+    /// releases the lock, leaves nothing behind that this call created (no recreated folder, no lock file in a folder
+    /// without a session) and throws <see cref="SessionChangedException"/>.
+    /// </summary>
+    /// <exception cref="SessionLockedException">Another window has the session open.</exception>
+    /// <exception cref="SessionChangedException">The session changed on disk after it was loaded.</exception>
+    public IDisposable AcquireLockForLoaded(DateTime savedAtUtc, bool loadedFromBackup, string? headerStamp = null)
     {
-        string folder = BranchFolder(branch);
-        var records = new List<GenerationRecord>();
-        if (!Directory.Exists(folder)) return records;
-        foreach (var (from, tos) in ListChunks(folder).OrderBy(p => p.Key))
+        if (!Directory.Exists(Path)) throw ChangedException();
+        var held = AcquireLock();
+        if (headerStamp is not null ? HeaderStamp() == headerStamp : IsSavedAt(savedAtUtc, loadedFromBackup)) return held;
+        held.Dispose();
+        if (!Exists)
         {
-            List<GenerationRecord> chunk = HistoryChunk.Decode(File.ReadAllBytes(System.IO.Path.Combine(folder, ChunkFileName(from, tos.Max()))));
-            if (chunk[0].Generation != from || chunk[^1].Generation != tos.Max())
-                throw new InvalidDataException($"History chunk {ChunkFileName(from, tos.Max())} holds other generations than its name says.");
-            if (records.Count > 0 && from != records[^1].Generation + 1)
-                throw new InvalidDataException($"History of '{branch}' is missing generations {records[^1].Generation + 1}…{from - 1}.");
-            records.AddRange(chunk);
+            // Nothing of a session is here (it was deleted and the lock recreated the folder): remove what the lock made.
+            try
+            {
+                File.Delete(System.IO.Path.Combine(Path, LockFileName));
+                if (!Directory.EnumerateFileSystemEntries(Path).Any()) Directory.Delete(Path);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
-        return records;
+        throw ChangedException();
     }
+
+    /// <summary>A fingerprint of header.json's bytes (empty when it is missing); tells whether another save replaced it.</summary>
+    public string HeaderStamp()
+    {
+        try
+        {
+            return File.Exists(HeaderPath) ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(HeaderPath))) : "";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return "?";
+        }
+    }
+
+    private SessionChangedException ChangedException() =>
+        new($"The session '{Name}' changed on disk while it was opening (another window saved, renamed or deleted it). Open it again.");
+
+    private bool IsSavedAt(DateTime savedAtUtc, bool backup)
+    {
+        try
+        {
+            string path = backup ? BackupHeaderPath : HeaderPath;
+            return File.Exists(path) && SessionHeader.Deserialize(File.ReadAllText(path)).SavedAtUtc == savedAtUtc;
+        }
+        catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- helpers
 
     /// <summary>Returns the name if it is safe as a folder name (1–64 of letters, digits, '-', '_'), else throws.</summary>
     public static string CheckBranchName(string name)
@@ -128,10 +364,12 @@ public sealed class SessionFolder
         return name;
     }
 
-    /// <summary>Chunk files in a branch folder by first generation (several when an old partial chunk is still there).</summary>
-    private static Dictionary<int, List<int>> ListChunks(string folder)
+    private readonly record struct ChunkFile(int From, int To, string Path);
+
+    /// <summary>Chunk files in a branch folder (temp files and other names are ignored).</summary>
+    private static List<ChunkFile> ListChunks(string folder)
     {
-        var chunks = new Dictionary<int, List<int>>();
+        var chunks = new List<ChunkFile>();
         foreach (string file in Directory.EnumerateFiles(folder, "gen-*-*.bin"))
         {
             string[] parts = System.IO.Path.GetFileNameWithoutExtension(file).Split('-');
@@ -140,16 +378,36 @@ public sealed class SessionFolder
                 || !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out int to)
                 || to < from || to / ChunkSize != from / ChunkSize)
                 continue;
-            if (!chunks.TryGetValue(from, out var tos)) chunks[from] = tos = [];
-            tos.Add(to);
+            chunks.Add(new ChunkFile(from, to, file));
         }
         return chunks;
     }
 
-    private static void WriteAtomically(string path, byte[] data)
+    /// <summary>Temp file → flush to disk → move over the target (<see cref="File.Replace(string, string, string?)"/> when a backup is wanted).</summary>
+    private void WriteAtomically(string path, byte[] data, string? backup = null)
     {
         string temp = path + TempSuffix;
-        File.WriteAllBytes(temp, data);
-        File.Move(temp, path, overwrite: true);
+        Step("create " + temp);
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            int half = data.Length / 2;
+            stream.Write(data, 0, half);
+            if (FaultInjection is not null)
+            {
+                stream.Flush();
+                Step("half " + temp);
+            }
+            stream.Write(data, half, data.Length - half);
+            stream.Flush(flushToDisk: true);
+        }
+        Step("written " + temp);
+        if (backup is not null && File.Exists(path)) File.Replace(temp, path, backup);
+        else File.Move(temp, path, overwrite: true);
+        Step("moved " + path);
+    }
+
+    private void Step(string what)
+    {
+        if (FaultInjection?.Invoke(what) == true) throw new SimulatedCrashException(what);
     }
 }

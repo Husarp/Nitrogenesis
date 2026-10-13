@@ -708,3 +708,412 @@ selected outlines, picker with the start arrow, drive).
    too (left stick, right trigger = gas, left trigger = brake, Y = restart, Back = menu). The timer runs live; at the
    finish the time shows big, with your best below it. Touch the orange danger cells to see "CRASHED". R restarts
    (1 s countdown), the wheel zooms, Esc goes back to the menu.
+
+## M3 — Training control
+
+### Stage A — Sim-side data layer (2026-10-09)
+
+Done (all in `src/Sim`, with tests): `History/` — `HistoryEntry` (a stored generation: the record with its recording kept
+encoded), `HistoryStore` (memory-capped, thinning), `Session` (segments, branches, active branch, current population,
+evolution settings, lineage, save planning), `Rebuilder` (any generation from the nearest earlier population),
+`SessionSaver` (background save thread), `TrainToCondition`, `ForkKind`; `Io/` — `SessionFolder` rewritten (save plans,
+backup header, damaged-file tolerance, crash-injection hook, lock file), `SessionHeader` (M3 fields), `HistoryChunk`
+format 2 (ticks + CRC-32), `SessionStore` (list / create / rename / delete / latest), `AppPaths`, `Crc32`, `SavePlan`;
+`Racing/TrainingHost` reworked on top of a session; `RacingTraining` from a stored config / `ResumeFrom(session)`;
+`GenerationRunner` (`EndGeneration(breedWith)`, `SetThreads`, `RecordBestCar`, `PopulationParams`, record `Ticks` and
+encoded recording); `Breeder.FromBest`. SimBench `kill-test` (+ its child `save-stress`) and `headless`.
+429 tests green (Debug and Release; 364 before). Every pinned hash unchanged; SimVersion stays 2 (no sim math
+changed). The app is unchanged apart from compiling against the new host (no M3 UI yet).
+
+- **History in memory:** each generation keeps seed, effective params, stats, ticks run, best genome, the best car's
+  recording (encoded: 2–5 KB instead of 10 bytes per tick in memory) and the full-population snapshot until thinned.
+  Measured encoded recordings: sprint 1.9 KB, hairpins 3.1–3.7 KB, labyrinth 2.8–4.7 KB, obstacle_field 1.4–3.3 KB
+  (0.2–0.5 ms to encode, done on the worker that records the best car while the main thread breeds).
+- **Thinning** (history memory limit, default 1 GB, `TrainingHostOptions.HistoryMemoryLimit` until M7): level 1 keeps
+  the snapshots of generations divisible by 5 and drops the others oldest first, only as many as needed; when only
+  multiples of 5 are left, level 2 keeps every 10th, then 20th, 40th… Best genome, recording and stats are never
+  dropped. In steady state recent generations keep every 5th snapshot and old ones get sparser. Per-level "clean below"
+  marks keep a thinning pass at one step per generation (2000 thinnings over 20 000 snapshots: 78 ms in all).
+- **Rebuild** (`Rebuilder`): walks back the lineage to the nearest snapshot, the current population or a branch's
+  first population (generation 0 from the seed; best-only fork from the parent's best genome; a full fork continues in
+  the parent), then re-runs each generation under its own segment's config for exactly the ticks it ran and breeds
+  with the stored seed and params. Every re-run generation is compared with its record (stats, best genome, ticks,
+  bit for bit); a difference throws instead of returning another population. Tests: equal to the original snapshot
+  bit for bit after thinning, across a segment change, through generations ended early, through full and best-only
+  forks and a fork of a fork of a fork. **M3 acceptance "fork from a thinned generation works"**:
+  `RebuildTests.FullForkFromAThinnedGenerationStartsFromItsExactPopulation` (and through the host:
+  `TrainingHostSessionTests.ForkFromAThinnedGenerationAndSwitchBackThroughTheHost`).
+- **Saving** (§5.1): every file goes temp → flush to disk → move; header.json is the commit point, written last with
+  `File.Replace` keeping the previous one as `header.json.bak`; it lists each branch's history end, and generations at
+  or after it are ignored on load. Chunk window w (generations 25w…25w+24) is written as one file per consecutive run
+  of its records; a save writes only windows with new generations or thinned snapshots, and after writing deletes the
+  window's files it supersedes. Autosave every 2 min (`AutosaveInterval`) and on exit; the training thread only copies
+  (header + current population + references to the immutable entries), the saver thread writes.
+- **Crash safety, simulated** (`SessionCrashTests`): a save with new chunks in several windows, thinned windows
+  rewritten over saved ones, superseded partial chunks deleted, a branch switch, a new segment and a new fork is cut at
+  each of its 26 steps (temp file created, half written, fully written, moved, deleted, header): every time the
+  session loads as exactly the previous save (before the header move) or the new one (after), without warnings, every
+  snapshot still held equals its original, and it resumes, trains and saves again. Also: damaged header → previous
+  save (and the damaged one never becomes the backup); a header that contradicts itself → previous save; a damaged
+  chunk → a reported gap, the rest loads, training goes on, the damaged file is kept; leftovers of a fork whose header
+  never committed are cleared on its first save; a second window cannot open a locked session.
+- **Crash safety, real kill** (`SimBench kill-test`, **M3 acceptance "kill the app mid-autosave → it resumes"**): a
+  child process trains sprint headless (40 cars, 2 threads) with autosave interval 0, a 3 MB history limit (constant
+  thinning and chunk rewrites) and forks at fixed points; the parent kills it at random moments, loads the session
+  (must have no warnings, no gaps, and rebuild a random thinned generation), and the next child resumes it. At the
+  end one child runs to the target and must equal an uninterrupted run in the parent.
+
+  | Run | Kills | Inside a save | Failed loads | Final run identical |
+  |---|---|---|---|---|
+  | Linux, `kill-test --rounds 30 --gens 400` | 26 (the child finished) | 15 (half-written chunk, half-written header, after a chunk move, between deletes) | 0 | yes (generation 400, 10 branches) |
+  | Windows runtime (self-contained SimBench.exe) under Wine 10.0, `DOTNET_EnableAVX=0`, `--rounds 20 --gens 250` | 20 | 8 | 0 | yes (generation 250, 7 branches) |
+
+- **Wine finding (not an M3 bug):** under Wine 10.0 the runner's determinism self-check ("Re-simulating agent N gave
+  score …: the simulation is not deterministic") fails within 5–100 generations whenever garbage collections are
+  frequent: with saving on, and equally with a thread that only allocates garbage and no saving at all (child switches
+  `NG_STRESS_GARBAGE`, `NG_STRESS_NOSAVE`, `NG_STRESS_NOFORK`). With the JIT's AVX off (`DOTNET_EnableAVX=0`) it never
+  happens (6 runs of 300 generations), and on Linux the same stress passes with identical results. So Wine does not
+  keep the AVX register state when the .NET GC suspends a thread mid-computation; real Windows saves it. M1/M2's Wine
+  checks passed because they made few collections. Consequence for M8: the Wine self-test must run with
+  `DOTNET_EnableAVX=0`; the laptop (real Windows) re-check is `SimBench\SimBench.exe kill-test`.
+- **Speed** (Linux box, Release, s_curve, 200 cars, 7 threads, 150 generations, box load ~16):
+  `SimBench train` (runner only) 24.1 gens/s; `SimBench headless` (through the host, with history) 20.9–22.6 gens/s;
+  the same saving continuously (autosave interval 0, the worst case) 19.4–20.0 gens/s.
+- **App check** (Windows release build under Wine, `--headless -- --track s_curve --pop 300 --speed 100 --threads 3
+  --stats --quit-after 40`, AVX on and off): 60 FPS, actual 100×, sim 4–6 ms/frame (M2: 3.3–6.6), render path
+  0.05–0.09 ms, **0 B per frame**, 86 generations; GC count 2 in 40 s (M2: 0): the history now keeps one ~360 KB
+  population copy per generation (background GC, no FPS dip seen).
+- `build/export-windows.sh` green (429 tests), zip 103 MB (it overwrote the local `out/Nitrogenesis-0.2.0-win64.zip`,
+  VERSION is still 0.2.0).
+
+**Stage A decisions:**
+
+- **Sessions location:** `AppPaths.DataRoot` = `Environment.SpecialFolder.ApplicationData` + `Nitrogenesis`, i.e.
+  `%APPDATA%\Nitrogenesis\` on Windows (PLAN §5.1), not Godot's `user://` (that would be
+  `%APPDATA%\Godot\app_userdata\Nitrogenesis`). Sessions in `sessions\`, tracks in `tracks\`, settings in `settings.json`.
+  The environment variable `NITROGENESIS_DATA` overrides the root (tests, measuring runs).
+- **Session name = folder name**, made safe (letters of any language, digits, spaces and `-_()[],.+'&!#`; others
+  become `_`; no trailing dots/spaces; reserved device names get a `_` prefix; ≤ 60 characters) and unique ("name (2)").
+  Rename = folder move (a case-only rename goes through a temporary name). Default name "<track> yyyy-MM-dd HH.mm".
+  **Continue** = the openable session with the newest `savedAtUtc`; damaged ones are listed after the others.
+- **Header** stays format 1; M3 adds optional fields (`savedAtUtc`, `trainingSeconds`, `totalTicks`, per branch
+  `historyEnd`, `kind` root/full/best, `forkParams`, per segment `populationSize`, population `weightsCrc32`).
+  **History chunks** are format 2: + the ticks the generation ran, + a CRC-32 trailer; format 1 still loads (ticks
+  unknown = run to the end).
+- **A new session is saved before its first generation runs** (so it is in the Sessions list at once); the exit save
+  waits for the saver. **Lock:** the host holds `session.lock` open with no sharing while the session is trained.
+- **Read-only sessions** (other SimVersion): load with their recordings and stats; training, forks, rebuilds and
+  saving are refused with the §5.1 message; the host does not accept them.
+- **Segments:** each branch has a segment at its first generation; `TrainingHost.ChangeSettings` applies at the next
+  generation boundary and starts a segment only when the SimConfig hash changes (a change of the brain's inputs —
+  rays, memory inputs, hint — is refused: "new training only", §6.4). Best time, stagnation and the graph baseline run
+  over the contiguous generations of the lineage with the same config hash (`Session.SegmentRunStart`), so changing a
+  setting and back starts a third run, and a fork continues its parent's run. The stagnation tracker is rebuilt by
+  replaying that run's stats (as in M1); a resumed session continues bit-identically (tested with boosts).
+- **Population size stays fixed per session in M3**; segments carry it (`populationSize`) for M7's "trim worst / fill
+  with mutants".
+- **Fork from generation X** (an evaluated generation): the new branch starts at X with that full population and its
+  own seed (derived from the root seed and the branch count) and evaluates X again (same result as the parent's X),
+  then breeds X+1 with its own seed and the current evolution settings. **Fork from best only:** child 0 is the best
+  genome unchanged, the others are copies mutated with the current mutation chance and σ (no boost), each from its own
+  stream under the branch's generation-X seed. Branch names fork-1, fork-2… (the branch count at creation).
+- **Switching branch** continues the branch from its last stored generation: that generation is evaluated again (it
+  must match its record bit for bit and is not stored twice), then the next is bred with the current settings.
+  Only the active branch's next population is stored in the header (PLAN §5.1 "the current population").
+- **Train to…:** the running generation continues without visuals; the condition is checked after each generation
+  that ends during the run ("to generation N" = N is the next to run; "until a car finishes" / "best time < X s" = the
+  generation that just ended). Afterwards the view continues at its chosen speed without owed game time.
+  `TrainingStats` has `Headless`, `TrainTo`, `GenerationsPerSecond` (≥ 1 s windows), `TrainToRuns`.
+- **Step mode** pauses right after a generation ends with the next one already set up at the start (its summary in
+  `LastGeneration`/`LastStats`); "Next" unpauses. **Next generation** ends the running one now (also while paused);
+  its record keeps the ticks it ran so a rebuild repeats exactly that.
+- **Requests from the UI** (fork, switch, train-to, next generation, evolution settings) are queued and run on the
+  scheduler thread between simulation steps. One refused before it changed anything leaves `Notice`; a failure after
+  it changed the session stops the training with `Error` (the exit save still writes the consistent session).
+- **Population copies are not pooled** (M1 noted it for M3): a save in progress may still hold a thinned snapshot, so
+  recycling its array could put another generation's genomes into a save. Measured cost: 2 GCs in 40 s at 100×, the
+  render path stays at 0 B per frame.
+- **Thinning "oldest"** = the lower generation number across all branches; ties go to the older branch.
+- **Stagnation replay on resume** uses the current evolution settings for the whole segment run (the stored params do
+  not hold the stagnation window or the boost switch). Exact unless those two were changed during the run; then only
+  the timing of the next boost can differ from an uninterrupted run.
+
+**Stage A review (2026-10-10, after the cut-off).** The cut-off run had finished the stage; the review kept all of it
+and fixed five gaps (each with a test that fails without the fix; 432 tests green):
+- A snapshot thinned while a save was still writing its window stayed on disk (the window was not marked for
+  rewriting, because its generations were not "saved" yet): `Session` now also remembers the ends of the last planned
+  save. Harmless for loading, but disk use grew past the memory limit.
+- After loading the backup header (header.json damaged), only the same `SessionFolder` object knew to delete the
+  damaged header before the next save; another object (e.g. one made again from `SessionStore.Folder`) would have
+  moved the damaged header over the good backup. The save plan now carries it (`SavePlan.ReplacesDamagedHeader`).
+- A fork refused or cancelled (generation not evaluated, rebuild cancelled) had already applied the evolution settings
+  passed with it, to the session only (not the runner). They now apply only once the fork is made.
+- Rename and delete of a session that a training host has open are refused (`SessionLockedException`): on Windows a
+  recursive delete would have removed part of the folder before failing at the lock file, and on Linux a rename would
+  have let the host write a fresh, partial folder under the old name.
+- The saver thread reports any exception as a failed save (it caught only I/O-type ones; anything else would have
+  ended the app). A resumed host also thins at once when its history limit is lower than the loaded history.
+
+Re-checked after the fixes: `SimBench kill-test --rounds 15 --gens 250` (Linux, Release): 15 kills, 6 inside a save,
+0 failed loads, final run identical (generation 250, 7 branches). `build/export-windows.sh` green (432 tests). The
+Windows build under Wine (`--headless -- --track s_curve --pop 300 --speed 100 --threads 3 --stats --quit-after 20`):
+60 FPS, actual 100×, sim 5.2–6.6 ms/frame, **0 B per frame**, generation 45 after 19 s.
+
+**For Stage B (app):** set the process priority to Below normal while `TrainingStats.Headless` (PLAN §4) and back
+after; open sessions through `SessionStore` (`Folder`, `Session.Load`, then `TrainingHost(session, options with
+Folder)`); the history list, graph and branch list read the session under `Session.SyncRoot` (`LineageEntries`,
+`SegmentRunStart`, `Segments`, `Branches`), never the current population's weights.
+
+### Stage B — the app (2026-10-10)
+
+- **01 Menu and Sessions:** the menu, Sessions list, Modal and the open/continue flow already existed and worked; the only change is Rename. It now checks the name first and says why: empty, characters not allowed (the old code silently turned them into "_"), or "a session named X already exists" (the old code silently made "X (2)"). A letter-case-only change of the own name is allowed. A session held by another Nitrogenesis window refuses Rename, Delete and Open with "open in another Nitrogenesis window" and stays untouched. Inside one window an open session cannot be reached from the Sessions list (leaving the training view saves and releases the lock first).
+- 02 (graph): GraphView series now drawn with antialiased polylines (the aliased ones showed tick marks and a broken look at width 1.2); ScoreGraph got tests/Sim.Tests/ScoreGraphTests.cs (11 tests).
+- **03 Train without visuals (progress screen):**
+  - `ProgressScreen` (generation N / target bar, generations/s, time, best time, live graph, Cancel/Esc, footer with thread
+    count and priority) and `TrainingView.StartTrainTo/LeaveProgress` already worked; checked: train-to 30 stops with the
+    view at generation 30; `trainto-finish` stops after the first generation with a finisher (hairpins: gen 1, graph shows
+    best 0.98 -> 2.6); `trainto-time:12.8` on sprint (seed 1) stopped at generation 12; `cancel` returns to the view and
+    the generation goes on; closing/quitting during train-to saves the session (`--continue` showed all 25 generations).
+  - `CpuPriority` is Windows only (`Process.PriorityClass`). Linux is left alone on purpose: setpriority can lower but a
+    normal user cannot raise it back. It now logs every change with `GD.Print` ("process priority: Normal -> BelowNormal",
+    "restored to Normal"), remembers the original class only after the change worked, and keeps it when a restore fails so
+    the next `Restore()` retries. Every exit from the progress state calls `Restore()`: finish and cancel (host stops, the
+    view sees `Headless` false), error (`Error` set), and app exit/window close (`_ExitTree` -> `LeaveProgress`).
+  - Not measurable here: the Windows priority itself (no Windows); gens/s on this box is 1.5-7 on sprint with 200 cars
+    because the machine was at load ~20 on 12 cores.
+- **04 Replay views:** `ReplayView` (Watch best = `RecordingPlayback`, Watch whole generation = `GenerationReplay`) was
+  already complete and correct; only tests were added (`RecordingPlaybackTests`, `GenerationReplayTests`: playback
+  reproduces every sample and stops at the last, restart/pause/step, MAX not offered; a re-simulated generation
+  matches its stored stats, also after thinning and after Restart; SimVersion mismatch refuses, recordings still play).
+  Watch best offers 0.01x-100x (no MAX); whole generation has the full training steps.
+  Verified: best of generation 12 finishes at 12.78 s (= history row), whole generation 12 ends "same result as
+  recorded", fingerprint unchanged after Back (also with training paused), keep-training goes on headless.
+- **05 Training controls:** Mode Auto/Step, StepSummary + Next, Next generation, Train to… dialog, Replay best, stagnation banner and badge, mutation slider with the pending note, the "saved" indicator and the small/large graph already existed and worked. Checked with scripts (sprint, 100 cars, seed 1): Step mode over 4 generations advanced the number by exactly 1 per Next and the summary showed that generation's stats; Next generation at tick ~770 of 1916 stored generation 0 with 972 ticks (not 1916); the slider set to ×2 during generation 1 showed "applies from generation 2" until it began, and the stored record of generation 2 has σ 0.40 / chance 0.20; Train to… dialog (all three conditions are in the dialog; "until a car finishes" started and returned); Replay best opened generation N-1 and Back returned; the boost banner and BOOST ACTIVE badge appeared after generation 59; a save made to fail (folder read-only) shows "save failed · training goes on" in red plus a 12 s banner with the reason (training continued; after the folder was writable again the next save cleared it and showed "saved HH:mm"); the small graph click opens the large one and Esc, G or a click closes it (real mouse events pushed through the viewport). 0 B/frame: `--stats` at 1× and 100× idle, in Step mode with the summary shown, with the large graph opened/closed and after a slider change. Gap-fills: the save failure also raises a banner (before only the corner text and a tooltip), the summary row "Bred with" is now "Next bred with" (it shows how the waiting generation was bred), the boost banner text is shorter (it overlapped the HUD panel). New debug `--do` verbs in TrainingView.DebugDo: `until-waiting`, `until-gen:N`, `until-tick:N` (the next step waits), `state` (prints stats and the last stored generations with ticks and σ), `click-graph[:big]`, `click-button:LABEL` (a real mouse click at a visible button), `key:NAME`; `mutation:F` now moves the slider as a user would.
+
+- **06 Training panel:** the panel (History / Branches / Segments tabs), fork dialog, branch switch with rebuild progress and Cancel, and the read-only HistoryScreen already existed; checked with scripts (sprint, seed 1, 60 cars): train 30, fork at 10 (full), fork at 20 (best only) from the fork, switch main / fork-1 / fork-2 back and forth: each branch resumes at its last stored generation (re-run, not stored twice), generation numbers and branch ranges right, fingerprint identical after quit -> `--continue`. Fork from a thinned generation (`--history-mb 1`, 150-300 cars): the dialog says "N generations to re-run", the rebuild shows progress, Cancel leaves the old branch active with an identical fingerprint, the finished fork continues. History list with 420 generations: virtual rows, wheel and scrollbar, jumps to the oldest/newest; `--stats` with the panel open idle: 0 B/frame (the refresh returns early when the session version did not change). Read-only session (header simVersion 1): message shown once, Watch best works, Whole gen./Fork/Switch disabled.
+  - **Sim bug found and fixed:** a fork that was made active and left again before it finished a generation could not be switched back to ("Generation N of 'fork-1' has not been evaluated"): `Rebuilder.MakePlan` now accepts a branch's first generation without a record (its first population follows from the fork). Test: `AForkLeftBeforeItsFirstGenerationEndedCanBeSwitchedBackTo` (full and best-only).
+  - After a fork or switch the HUD's last-generation summary and boost marker belonged to the other branch (`TrainingHost` now resets `LastGeneration`/`BoostStartedAt`). Host refusals with a notice: fork or switch while training without visuals runs, switch to the active branch (tests added). The view also refuses with a banner (`WhyNotNow`): error, rebuild running, train-to/background training, not ready.
+  - Panel: 580 px wide, row buttons "Watch best / Whole gen. / Fork…", only the shown tab is rebuilt on refresh, fork entries in the Segments tab are a one-line note ("fork-1 starts at generation 10: same settings") instead of a fake segment, separators between real segments, panel sits under the rebuild box and the enlarged graph. The rebuild text for "Best car only" no longer claims a rebuild.
+  - HistoryScreen: the older-physics message is shown once (not also inside the panel).
+  - Debug verbs: `until-*` waits are now one-shot (a fork moves the generation number back and the script stalled), `state` prints the branches, `later:S:VERB:ARG` (runs a verb after a delay while a rebuild or train-to blocks the script), `cancel-after:S`, `fork-raw`, `switch-raw`, `panel-scroll:N`, `panel-wheel:N` (real wheel events), `panel-first`, `rebuild-cancel`.
+- **07 Autosave and resume:**
+  - Already there and working: the autosave on the saver thread (`TrainingHost.Autosave`, 2 min, "saved HH:mm"), the exit save in `Dispose`, Esc/Menu/quit through `Main.AfterSaving`, the failed-save banner (05). Checked and kept.
+  - **Mode and speed are now saved** (they were not stored anywhere: Continue always came back in Auto at the `--speed` default). `SessionHeader` got optional `stepMode` (bool) and `speed` (number, or the text "max" for MAX); `Session.StepMode/Speed` (null = a file without them, then the options count) with `SetViewState` (a change counts as an unsaved change); the host copies them in before every save. Format stays 1, old headers load. `--speed` on the command line still wins over the saved speed. Paused is not saved. (Resuming in Step mode now waits for Next: Stage C, R3/R3b.)
+  - **Exit save failing:** `TrainingHost.Dispose` is split into `Stop()` (stop, final save, result in `ExitSaveError`), `RetryExitSave()` and `Dispose()`. `Main` stops the view first (`TrainingView.StopAndSave`), and if the save failed it keeps the stopped view in memory and shows "Could not save the session" with the reason and "Leave without saving" / "Try again" (Esc asks again). So nothing is lost by accident and a retry works after the problem is fixed. Applies to Menu, Sessions, Open, new training and quit/window close alike.
+  - **Window close / signals:** `Main._Notification` close request: the saving layer is now added deferred (adding a child inside the notification failed: "Parent node is busy setting up children"). SIGTERM, SIGHUP and SIGINT are handled like the window's X (first one saves and quits, a second one ends the app at once). A SIGKILL, a power loss or a dead X server cannot be handled: the last autosave counts (at most 2 min lost).
+  - Debug verbs: `close-request` (Main: `Root.PropagateNotification(NotificationWMCloseRequest)`, the real path), `exit save: …` log line in `StopAndSave`; while a view is being left only `wait`, `shot`, `modal-ok`, `modal-close` run from the script.
+
+### Stage C — review fixes (2026-10-11)
+
+A two-lens review of Stage A + B (data safety; app behaviour and threading vs PLAN §8 M3 and 0 B/frame), every finding
+checked by running code. Two medium data findings (R1, R2) and five low ones were fixed; each fix has a test or a
+scripted check. SimVersion 2 and every pinned hash unchanged. 486 tests green (Debug and Release).
+
+
+- **R1 Opening race (data loss):** Main loads a session (seconds) and only then creates the `TrainingHost`, which took the folder lock. If another window saved the session in between, the stale session was trained and saved over it; if it was deleted, the lock recreated the folder and a partial session (header + new chunks) was written. Fix: for a loaded session the constructor uses `SessionFolder.AcquireLockForLoaded`: no folder means refuse at once; after taking the lock the header.json fingerprint (`SessionFolder.HeaderStamp`, taken by `Session.Load` before reading, `Session.LoadedHeaderStamp`; also right when the backup header was used, which a savedAt compare is not) must still be the loaded one. Otherwise the lock is released, a folder the lock recreated is removed again (nothing left behind) and `SessionChangedException` (an `IOException`: "The session changed on disk while it was opening ... Open it again.") is thrown. Tests: `OpeningAStaleSessionAfterAnotherWindowSavedIsRefusedAndKeepsTheOtherWindowsWork`, `OpeningASessionDeletedMeanwhileIsRefusedAndLeavesNothingBehind`, `ADeletedFolderThatIsRecreatedByTheLockLeavesNothingBehind`, `OpeningASessionLoadedFromTheBackupHeaderStillWorksAndSpotsAnotherSave`.
+- **R2 No autosave while idle (data loss window):** the scheduler thread slept until a frame or command came, so a paused training, Step mode waiting for Next or a replay never autosaved. Fix: the wait has a 1 s timeout; on a timeout with nothing to do the loop only runs `Autosave(force: false)` and sleeps again (no frame/served accounting touched). Tests: `AutosaveStillRunsWhileTheTrainingIsPaused`, `AutosaveStillRunsWhileStepModeWaitsForNext` (autosave interval 1 s, no Frame calls, the saved header reaches the latest generation).
+- **R3 Continue in Step mode ran at once:** a resumed session restored Step mode but its first generation started running. Fix: resuming with Step mode on starts paused in the WaitingForNext state; Next/Resume starts it. Test: `ResumingInStepModeWaitsForNextInsteadOfRunning`.
+- R3b: a resumed Step-mode session now fills the summary (`LastGeneration`/`LastStats`) from the stored generation before the current one; at a branch's first generation it starts paused but not waiting.
+- R4: closing a replay that had "keep training while watching" on, in Step mode, unpauses so the half-run generation finishes and waits at its summary.
+- R5: in the Sessions list, muted (read-only/damaged) rows turn white while selected so they stay readable on the orange bar.
+- R6: the Segments tab note for a fork-only segment now starts with "segment N:" (the number the HUD shows).
+- The save-failure banner (and every banner) is a fixed 520 px wide box with word wrap: a long error with its path
+  covered the HUD panel and the Menu / Training panel buttons (`out/shots-m3-final/failed-save-banner-wrapped.png`).
+- **Checked and found sound:** kill mid-autosave (SimBench kill-test, 12 random `kill -9` of the app at 100× with
+  continuous saving), quit/window close/SIGTERM during train-to, replay, Step mode and a fork rebuild (every ended
+  generation saved, Continue identical), a failed save (message, training goes on, retry at exit), rename/delete of an
+  open session (refused; in one window it cannot be reached), fork/switch during training (queued on the scheduler;
+  refused during a train-to or rebuild), SimVersion mismatch (read-only, never saved), thinning (fork from thinned
+  generations rebuilds bit-exactly), the lock order (the host's lock is taken before `Session.SyncRoot`, never the
+  other way round).
+- **Left as they are (low):** the replay view's 10/s text refresh is not excluded from its own allocation row (~4 KB in
+  those frames; the training view is 0 B/frame); with continuous saving (`--autosave-seconds 0`) 1–2 frames per run
+  show ~7 KB on the main thread right after a garbage collection (not seen with the default 2-min autosave);
+  `TrainingHostTests.TenXRunsTenTicksPerFrame` (M2) can fail when the box is heavily loaded (passes on rerun); the
+  mutation and speed sliders snap to their steps (×1.41, 25×), by design.
+  Also from the final check: generations that end while "keep training while watching" runs are not stopped by Step
+  mode (by design; after Back the running generation finishes and waits), so the few that end in the moment between
+  Back and the cancel reaching the scheduler are skipped too; a time-limit change made while Step mode waits applies
+  after the waiting generation, and is lost if the app is quit before that generation ends (pending changes are not
+  saved).
+
+### Deviations
+
+- Stage A:
+  - **Generation 0's snapshot is never thinned** (PLAN §4: "the oldest full-population snapshots are thinned"). It is a
+    multiple of every spacing, so the levels never drop it; it is one snapshot, and generation 0 rebuilds from the seed
+    anyway.
+  - **History chunks may be several files per window** (PLAN §5.1: chunks of 25 records, append-only). M1's partial
+    chunks are generalised: a window is one file per consecutive run of its records; only after a damaged file is a
+    window split, so the rest of the history stays readable. Complete, unthinned windows are still written once.
+- Stage B:
+  - 07: `SessionHeader`/`Session`/`TrainingHost` (Sim) changed for the saved mode and speed and the `Stop`/`RetryExitSave` split (PLAN §5.1 lists neither); tests added (`ModeAndSpeedRoundTripAndAreOptional`, `AnInvalidModeOrSpeedIsRefused`, `ModeAndSpeedComeBackWhereTheUserLeftThem`, `ASessionWithoutModeAndSpeedUsesTheOptions`, `AFailedExitSaveIsReportedAndCanBeRetried`).
+
+**What to try (M3):** unzip, run Nitrogenesis.exe (a normal build; saved trainings live in %APPDATA%\Nitrogenesis\sessions).
+
+1. **New training** → pick a track (try Sprint) → Start. The HUD (top left) now has Pause, Step, Mode: Auto, the speed
+   slider, **Next gen**, **Train to...**, **Replay best** and a **Mutation** slider; the corner says "saved HH:mm" (the
+   session saves itself every 2 minutes and when you leave).
+2. **Mode: Step** (or key M): the training stops at the end of every generation and shows a box with that generation's
+   result (finished, best time, best and average score, "Next bred with"). **Next (Enter)** plays one more generation;
+   **Back to Auto** returns to normal. Try it at 10x or more so a generation takes seconds.
+3. **Next gen** (key N): ends the running generation right now (cars that are still driving just stop) and breeds the
+   next one. The graph shows a dip for that generation.
+4. **Mutation slider**: drag it to x2 while a generation runs; the HUD says it applies from the next generation, and
+   the next generation is bred with the stronger mutation. x1 is normal.
+5. **Train to...** (key T): three conditions in one box: *To generation N*, *Until a car finishes*, *Until the best time
+   is below S*. Start: the map is not drawn, all threads work, you see generation, generations/s, time, best time and
+   a live graph. **Cancel (Esc)** returns to the training at the generation reached. Closing the app meanwhile saves.
+6. **Graph**: click the small graph (bottom right) or press G for the big one (axes, dashed orange line = a new segment
+   starts). Esc, G or a click closes it.
+7. **Training panel** (button top right, or H): tab **History** (one row per generation: best score, time, how many
+   finished; **Watch best**, **Whole gen.**, **Fork...**), tab **Branches**, tab **Segments**.
+8. **Watch best**: plays the stored recording of that generation's best car (0.01x to 100x, Pause, Step, Restart).
+   **Whole gen.**: simulates that whole generation again with all its cars (the result should match the history row).
+   Tick **Keep training while watching** to let the training go on in the background; **Back (Esc)** returns and the
+   training view shows the newest generation.
+9. **Fork...** on a row: a box offers **Whole population** (continue with all cars of that generation) or **Best car
+   only** (a new population of mutated copies of its best car). A fork from an old generation may first show
+   "Rebuilding generation N..." with a progress bar and Cancel (that is normal: old generations are re-run from a
+   snapshot). The fork becomes the active branch; the old branch stays.
+10. **Branches** tab: every branch with its origin ("from main at generation 10 - whole population"); **Switch** makes
+    another branch active (each branch continues where you left it).
+11. **Segments** tab: type a new **generation time limit** (0 = auto) and press "Apply at the next generation...". A
+    confirmation box explains that this starts a new segment: the best time, the stagnation check and the graph restart
+    there (the graph shows a dashed orange line); the population carries on.
+12. **Esc** (or Menu) saves and returns to the menu. **Continue** (menu) opens the last session exactly where you left
+    it (same generation, branch, mode, speed, mutation); **Sessions** lists all of them (Open, **Rename...**,
+    **Delete...** with a confirmation). A session made with an older physics version opens read-only (graph, history,
+    Watch best only).
+13. **Close the window (X) in the middle of training** and press Continue again: nothing is lost (the X saves
+    first; after a crash or power loss at most the last 2 minutes are). If saving ever fails (folder read-only, disk full) you see "save failed - training goes on"; on
+    leaving a box offers **Try again** or **Leave without saving**.
+14. **F3**: the Alloc row should still read **0 B / frame** at 1x and at 100x, also with the panel and graph open.
+15. **Kill test on the laptop:** in a terminal in the unzipped folder run `SimBench\SimBench.exe kill-test --rounds 15
+    --gens 250` (kills a training in the middle of saving 15 times; takes a few minutes). It must end with "0 failed
+    loads" and "identical to the uninterrupted run: yes". Send me the last lines. (`SimBench\SimBench.exe learn-suite`
+    must also end with "learn-suite passed".)
+
+## M4 — Track editor
+
+### Decisions
+- Ticket 01 (`src/Sim/Map/EditDocument.cs`, `DirtyRect.cs`): brush of size n at cell (x,y) covers lo..lo+n-1 with lo = x-(n-1)/2, so odd sizes are centred and even sizes extend one cell towards +x/+y. Round brush = cells whose centre is within n/2-0.1 of the brush centre (1 = dot, 2 = 2x2, 3 = plus, 15 = disc); BrushSize is clamped to 1-15.
+- Undo cap `EditDocument.MaxUndoSteps` = 200 (oldest dropped). A step stores only changed cell indices + old bytes + the one new type (about 5 bytes per changed cell; 200 whole-L fills would be about 80 MB, unrealistic).
+- New map start = centre cell centre (w/2+0.5, h/2+0.5), angle 0. `SetStart` clamps the cell into the grid, snaps the angle to the nearest 15 degrees and normalises to [0,360) (so 352 -> 345, 353 -> 0; ties round up). No convention existed in TrackFile, which stores the angle as given.
+- Every call returns `EditResult(DirtyRect Rect, bool StartChanged)` and also raises `Changed`; stroke moves report only the cells newly changed by that move. `Revision` bumps on every real change (including each stroke move, undo, redo).
+- Undo/redo while a stroke is active ends the stroke first (Undo then undoes that stroke). Starting a new stroke or any other tool ends an open one. A stroke keeps type/size/shape from BeginStroke.
+- `IsDirty`/`MarkSaved` follow the undo position (undo back to the saved state = clean); if the saved step falls off the cap it can never be clean again. Name/Meta edits are not tracked.
+- Fill is iterative (explicit stack, cells repainted when pushed), 4-connected, no-op for same type or outside grid. `Snapshot()` returns a Track with a cloned grid and deep-copied meta.
+- Ticket 02 (`app/Editor/`: `EditorView`, `EditorCanvas`, `EditorToolbar`, `PaintSwatch`, `DrawLayer`): the canvas is a Control holding a Node2D "world" (scale = px per cell, position = pan) with layers map sprite, grid, `MapLayer` (hook for ticket 03), preview/start overlay. Painting only repaints the dirty rectangle: `MapTexture.CreateImage` + `MapTexture.Repaint(image, grid, rect)` (BlitRect) and one `ImageTexture.Update` per frame (changes are accumulated in `_Process`); `MapTexture.Create` output is unchanged. Hooks on `EditorView`: `Document`, `DocumentReplaced` (raised by `ReplaceDocument`), `MapLayer`, `StatusBarSlot` (a 30 px PanelContainer with an empty placeholder label).
+- Ticket 02: the editor draws the start as an overlay (the M2 arrow as a polygon, accent colour) with a rotate handle 7 cells ahead while the Start tool is active. Placing or rotating keeps a pending start in the canvas and calls `SetStart` once on mouse release, so it is one undo step. Line and rectangle call the document once on release (clamped to the map); brush and eraser use Begin/Move/EndStroke (ended on release, focus loss and Esc); fill acts on press. The eraser is the Wall paint type while the Eraser tool is active; picking a paint type while Eraser or Start is active switches to Brush.
+- Ticket 02: view: wheel zoom around the cursor (x1.15 per notch, from half the fit zoom to 64 px/cell), middle/right drag or Space+left drag pans (map stays at least 60 px on screen), grid (G) shows from 8 px per cell. Shortcuts: B L R F E S, 1-5, [ ], G, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, Esc (cancels a drag first, otherwise back to the menu with no unsaved-changes check until ticket 05). Toolbar buttons take no focus so keys keep reaching the view.
+- Ticket 02 debug: `--editor [S|M|L|TRACKNAME]` (new map, or an editable copy of a bundled track). `--do` verbs (EditorView.DebugDo): `tool:`, `paint:`, `size:`, `shape:`, `stroke:x,y/x,y/...`, `line:x0,y0,x1,y1`, `rect:`, `fill:x,y`, `start:x,y,angle`, `undo`, `redo`, `grid:on|off`, `zoom:PX_PER_CELL`, `center:x,y`, `fit`, `hover:x,y`, `drag-preview:tool,x0,y0,x1,y1`, `newmap:S|M|L`, `state` (size, revision, undo/redo, dirty, start, cell CRC), `mouse:down|move|up|wheelup|wheeldown,x,y[,left|right|middle]` (real injected mouse events at the centre of cell x,y; the start handle is 7 cells ahead of the start), `bench[:CELLS_PER_FRAME]` (a serpentine stroke made of injected mouse moves, prints idle and painting frame times and texture-update times; the script waits for it, use `--quit-after`). Screenshots in `out/shots-m4/`.
+- Ticket 02: checks on this box (load average about 36, xvfb + llvmpipe, 1280x720): L map, brush 7, 408 mouse moves of 16 cells: idle frame 60 ms vs 55 ms while painting (max 148), texture update avg 7 ms (3.6 ms on a quieter run), so painting adds nothing visible over the software renderer's own cost. xvfb was not installed any more and was added with apt.
+- Ticket 03 (`src/Sim/Map/EditorAnalysis.cs`, `EditorAnalysisRunner.cs`; app `app/Editor/EditorChecks.cs`, `EditorStatusBar.cs`, `AnalysisOverlay.cs`): `EditorAnalysis.Run(track, settings, ct)` is a pure function that reuses Clearance, DistanceField, Solvability and the GrassShortcut result type (two Dijkstra runs: with grass and road only). Result = state (the Solvability cases), unreachable mask (passable cells that cannot reach the finish; filled only when the finish is cut off), too-narrow mask (non-blocking cells not passable for half-width 0.9), road-behind-start flag, grass-shortcut flag + route, estimate and a message list (Ok / Warning / Error). Estimate = start distance in the with-grass field / (`EstimateSpeedFactor` 0.6 x MaxSpeed); `VeryShortSeconds` = 20 gives a warning.
+- Ticket 03: start problems: outside the map, in a wall / too narrow, car outline touching wall or danger (the Solvability cases), plus "one car length of road behind the start" = the centre line sampled every 0.5 cells from the start back 3.0 cells (`CarSize.Length`), each sample must be a Road or Finish cell the car fits on (grass, danger, wall or outside fail). The road check is skipped when the start already has one of the first three errors. The grass-shortcut route is the with-grass field followed downhill (lowest of 8 neighbours) from the start; it is only built when the shortcut warning applies.
+- Ticket 03: `EditorAnalysisRunner`: one background thread, `Request(snapshot, revision)` debounced 150 ms (`DebounceMilliseconds`) after the last call; a newer request replaces a waiting one, cancels a running one and clears an untaken result, so only the newest request ever delivers. `TryTakeResult` (UI, once per frame) / `WaitForResult` (tests); the result carries its `Revision` and the UI shows it only if it equals `document.Revision` (a new runner is made when the document is replaced, since revisions restart at 0). The lock guards only the hand-over, never the analysis.
+- Ticket 03: the editor asks for a new analysis from `Document.Changed` itself (not in the next frame), so the debounce starts at the edit; a snapshot is one 36 KB array copy. While a check is pending the status bar and overlays show the previous result dimmed with "checking...". Overlay = one RGBA texture (1 px per cell, nearest): red tint = cut off, orange diagonal hatch = too narrow, plus a cyan polyline for the grass route. Log line per applied result: `editor-check: ... rev N applied X ms after the edit (result ready after Y ms, frame wait Z ms)`.
+- Ticket 03 timing (box load average 12-22, 12 cores, xvfb + llvmpipe frames of 20-60 ms): Run takes 4-6 ms (Release, bundled maps), 10 ms on a wide-open M map with a big grass block, 13-22 ms in a Debug Sim build (first call about 40 ms of JIT). Acceptance (wall a line across the road, "Not finishable" on screen): 169-188 ms in 7 runs at load about 12; 181-232 ms at load about 21 (150 ms debounce + 5-25 ms compute/wake-up + 0-45 ms wait for the next frame, which is the software renderer's frame time). On an idle box with a GPU expect about 160-170 ms. The timing tests (`EditorTimingTests`, run alone) assert the best of 15 runs (Run < 50 ms, 150 ms in a Debug build; request to result <= 200 ms) and a loose median bound, because a loaded box makes the median noisy.
+- Ticket 04 (Test / Drive; `EditorView`, `TestRouteLayer`, `EditorToolbar` "Try it" box, `EditorChecks.SetReferenceTime` -> `EditorStatusBar.SetReferenceTime`): Test (button or T) runs the analysis and then `ReferenceDriver.Run` in `Task.Run` on a snapshot, tagged with the document revision; any edit (`Changed`) or `ReplaceDocument` drops the result, the route and the badge at once, and a run that finishes later is ignored. Not finishable per the live analysis is not driven. Badge: "Finished in 27.3 s" (route + status bar "27.3 s (Test)" instead of the live "≈ 31 s"), "Finishable, but very tight" (route + red mark where the driver crashed/stalled/timed out) or "Not finishable".
+- Ticket 04: real tight case found by a probe (not faked): a two-lane serpentine on an M map, lanes 4 cells wide, 1 cell wall between them, joined by a 4-wide connector: `paint:road;rect:20,20,236,23;rect:20,25,236,28;rect:233,24,236,25;paint:finish;rect:21,25,23,28;start:23,22,0`. The field says finishable (about 39 s) but the reference driver stalls at the hairpin after 15.6 s. Other widths 3-8 and gaps 1-4 finished; width 2 is not finishable.
+- Ticket 04: Drive (button or D) hands `Document.Snapshot()` to `DriveView` (`BackToEditor = true`: the button says "Editor (Esc)", hints and the finish text say editor). Main parks the editor (`RemoveChild`, no free) in `_parkedEditor`, shows the drive view, and on its Back (deferred, so not inside the key event) frees the drive view, restores the clear colour and re-adds the same editor. `_Ready` runs once but `_EnterTree`/`_ExitTree` every time, so hooks that were in `_ExitTree` only are now redone in `_EnterTree` (EditorView, EditorCanvas); `EditorChecks` disposes its runner in `_ExitTree` (no analysis thread while driving or after the editor is freed) and makes a new runner plus a fresh analysis in `_EnterTree`. `Main.Switch` frees a parked editor too (Menu while driving). Checked with /proc thread names: 1 EditorAnalysis thread in the editor, 0 while driving, 1 after Esc, 0 after the menu.
+- Ticket 04 debug: `--do` verbs `test` (later `shot` steps wait for the result), `drive`, and in the drive view `back` or `key:Escape` (new general `key:NAME` verb, a real key press through Godot's input); `--autopilot` also works for a drive opened from the editor. `state` now ends with `test=none|running|Finished|Tight|NotFinishable`. Shots `out/shots-m4/test-*.png`, `drive-*.png`.
+- Ticket 05 (`src/Sim/Io/TrackLibrary.cs`, `app/Editor/EditorFileDialogs.cs`, toolbar File group, `TrackPicker`): user tracks live in `AppPaths.Tracks` as one `<name>.track` per name; names are compared ignoring case (Windows), same rules as session names (not empty, allowed characters, max 60, no trailing dot/space, no device names) with a sentence per failure. Save is atomic: temp file `<file>.saving` in the same folder, `Flush(true)`, then `File.Replace` (or `Move` for a new file); on any failure the temp is deleted and the old file is untouched (`TrackFile.Save` is unchanged). `List()` shows a damaged file with its problem instead of failing; 25 tests in `TrackLibraryTests` (611 total).
+- Ticket 05 UI: File group (New / Open / Save / Save as, Ctrl+N/O/S/Ctrl+Shift+S) and the track name with a bullet when unsaved replace the "TRACK EDITOR" heading; Undo/Redo/Grid share one row so the toolbar still fits 720 px. New = size box (S 192x108, M 256x144, L 384x216). Open = one list: user tracks (damaged ones disabled with the reason), then bundled (opens a copy named "<name> copy" with no file, so Save asks for a name). Save on a document with a file writes there, otherwise Save as; the name box validates, a clash asks "A track named X already exists. Overwrite?" (Cancel returns to the name box); a failed save shows the reason, the document stays dirty. "Save changes to X?" (Save / Don't save / Cancel) guards New, Open, Back/Esc and the window close.
+- Ticket 05 quit: `Main.RequestQuit(confirm)` asks only for the window X and OS signals; while the editor is parked for Drive it is brought back first (deferred, the close notification blocks AddChild) and asks there. `quit`, `--quit-after` and shot-quit never ask. The training close/save flow is unchanged.
+- Ticket 05 pickers: bundled tracks first, then a "YOUR TRACKS" heading and the user tracks ("· your track", damaged ones greyed "· damaged"). A session already stores its own track copy (`SegmentEntry.Track`), so Continue works after the user file is deleted (checked). `--track/--drive/new:NAME` and `--editor NAME` also find user tracks (bundled first). A user track may share a name with a bundled one; both are listed.
+- Ticket 05 debug: editor `--do` verbs `new:S|M|L`, `open:USERTRACK`, `open-bundled:NAME`, `save`, `save-as:NAME` (same functions as the dialogs, including the questions), `new-dialog`, `open-dialog`, `save-as-dialog[:TEXT]`; Main `modal-button:LABEL` (presses a button of the newest box); picker `pick:NAME` and `start`, `--picker drive`. `state` shows `name=` and `file=`. Shots `out/shots-m4/files-*.png`.
+
+### Review (07) and fixes (08) (2026-10-11)
+
+Manager review of tickets 01-05 against PLAN §6.3/§8 M4 (tools and undo, analysis correctness and threading, file
+safety, unsaved-changes flows, picker/session integration, training view 0 B/frame) plus the tester's findings (06).
+Checked and found sound: one stroke = one undo step, undo/redo restore exact bytes (24-step round trip by hash), redo
+cleared by a new edit; the analysis runner only ever delivers the newest request and the UI shows a result only when
+its revision equals the document's (a new runner per document); Test results are tagged with the revision and dropped
+after any edit; the analysis thread stops while driving and when the editor is freed; atomic track save (temp + flush +
+File.Replace/Move, temp removed on failure, old file intact); sessions keep their own track copy (Continue works after
+the user file is deleted); training view still 0 B/frame at 1x and 100x. Fixed:
+
+- **F1 (medium) Unfinishable user tracks could be trained/driven** (no finish, start in wall: 60 cars in a wall with a
+  3600 s limit). The pickers now check the selected track (`Solvability.Check`, cached), show "Not finishable: <reason>
+  - fix it in the Track editor" in red and disable Start (also Enter, double-click, the `start` verb).
+- F2 (low) "Too little road behind the start" was a red error next to a green "Finishable"; it is now an orange
+  warning (errors = not finishable). F3 (low) a start on Danger said "in a wall": now "on a wall or danger cell, or in a
+  spot too narrow". F4 (low) a new map (no finish, start in wall) said "Start needs 3 cells of free road behind it"; it
+  now names the start-in-wall problem (tests `LessThanOneCarLengthOfRoadBehindTheStartIsAWarning`,
+  `ANewMapNamesTheStartInWallInsteadOfTheRoadBehindIt`, `AStartOnDangerSaysDanger`).
+- F5 (low) damaged track files showed raw JSON parser text; now "damaged: not a readable track file" (details in the
+  tooltip and the log). F6 (low) the Start tool drew a meaningless one-cell hover box: removed. F7 (low) the window X
+  was ignored while the editor had unsaved changes and another box was open: the box is closed and "Save changes?" is
+  asked (`Modal.CloseAll`, `Modal.UnsavedQuestionOpen`). F8 (low) Save as with a name differing only in letter case
+  from an existing file left the document showing the typed case: the document now takes the saved file's name.
+- F9 (debug) `key:` accepts modifiers: `key:ctrl+z`, `key:ctrl+shift+z`, `key:ctrl+s` (ctrl, shift, alt).
+- Screenshots: `out/shots-m4-final/` (fixes and the final check), `out/shots-m4-verify/` (ticket 06), `out/shots-m4/`
+  (tickets 02-05).
+- **Final check (ticket 06 re-run after the fixes):** 613 tests green (Debug and Release); learn-suite passed (72.6 s);
+  acceptance (s_curve, wall across the road by line/rect/brush, 12 runs, load 6.7-8.4, xvfb + llvmpipe): "Not
+  finishable" on screen 167-186 ms after the edit (median ~178), 12/12 within 0.2 s; training view 0 B/frame at 1x and
+  100x; `build/export-windows.sh` exported the exe but stopped at rcedit because Wine is no longer installed on this
+  box (icon/version, SimBench publish and the zip not made; no Windows/Wine run); Linux headless `--check-tracks` and a
+  scripted `--editor` run were clean. Builds must run through the physical path (`~/projects/coding_projects/...`):
+  through the new `~/coding_projects` symlink the build fails with CS0006.
+- **Left as they are (low):** while Eraser or Start is active the swatch row still highlights the last paint type; a
+  damaged file named "Damaged" reads "Damaged - damaged: ..."; names longer than 60 characters are cut by the text box
+  instead of rejected; Godot rewrote `app/project.godot` (header comment, `run/max_fps` moved; same settings).
+
+### Deviations
+
+- "At least one car length of free road behind the start" (PLAN §3.1, "required") is an orange warning in the editor,
+  not an error: the track can still be finished and saved; the generator (M5) can treat it as a hard rule.
+- The picker refuses tracks that are not finishable (not in the plan; a gap filled after the review).
+- Painting rewrites only the dirty rectangle's pixels on the CPU, but the texture is uploaded whole once per frame
+  while painting (Godot 4's `ImageTexture.Update` has no sub-rectangle upload; 3.6-7 ms on llvmpipe for an L map).
+- The live-check debounce starts at every edit (each stroke move), so a check runs 150 ms after the stroke stops, not
+  after the mouse is released.
+- Acceptance timing was measured under xvfb with a software renderer (frames 20-60 ms); see "What to try" for the
+  owner's check on real hardware.
+
+### What to try (M4)
+
+**What to try (M4):** unzip, run Nitrogenesis.exe (saved tracks live in %APPDATA%\Nitrogenesis\tracks, one `<name>.track` file each).
+
+1. **Open the editor:** main menu → **Track editor**. You get an empty map (all wall, a start flag in the middle). To
+   change a bundled track, press **Open** and pick one under BUNDLED: it opens as an editable copy ("<name> copy"),
+   the original is never touched. **New** asks for a size: S 192x108, M 256x144, L 384x216.
+2. **Tools** (left panel or keys): **Brush** (B), **Line** (L), **Rectangle** (R), **Fill** (F), **Eraser** (E, paints wall),
+   **Start flag** (S). Pick what to paint with the swatches or keys 1-5: **Road, Grass, Wall, Danger, Finish**. The
+   brush has a size slider (keys [ and ] change it, 1-15) and a Round / Square shape; a white outline shows what a
+   click will change. Line and rectangle show a preview while you drag and paint when you let go. Fill repaints a
+   whole connected area in one click.
+3. **Start flag:** click a cell to put the start there; drag from it to turn the car (steps of 15 degrees); you can
+   also grab the round handle in front of the arrow. Place the start on road with at least one car length of road
+   behind it.
+4. **Undo / redo:** Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), or the buttons. Up to 200 steps; a new edit after undo drops the
+   redo steps. A whole brush stroke is one step.
+5. **View:** mouse wheel zooms around the pointer; pan with the middle or right mouse button, or Space + left drag.
+   **Grid** (G) shows from 8 pixels per cell. Esc cancels a drag first; otherwise it leaves the editor.
+6. **Status bar** (bottom): it re-checks the track about 0.2 s after every edit. Green "Finishable" with a time
+   estimate (about); red "Not finishable" with the reason (no Finish zone; the finish cannot be reached, shown as red
+   area on the map; the start is on a wall/danger or too narrow; the car at the start touches a wall or danger); orange
+   warnings: "Start needs 3 cells of free road behind it", "Very short track: under 20 s" and "Cars will cut across the
+   grass here" (a cyan line shows that route). Orange hatching on the map = spots too narrow for the car.
+   Try it: build a road, put a Finish on it, then wall the road off with a line and watch "Not finishable" appear.
+7. **Test** (button or T): a reference driver drives your track. The map shows its route and a box says
+   "Finished in 27.3 s", "Finishable, but very tight" (a red mark shows where it got stuck) or "Not finishable". Any
+   edit removes the result.
+8. **Drive** (button or D): drive your track yourself (W/S, A/D or arrows); **Esc** brings you back to the editor with
+   everything as you left it, undo still works.
+9. **Save:** Ctrl+S saves (asks for a name the first time), Ctrl+Shift+S = **Save as**. Names: letters, digits, spaces and
+   - _ ( ) [ ] , . + ' & ! # only, up to 60 characters, no trailing dot or space; the box says what is wrong. A name
+   that already exists asks "Overwrite?". A dot after the track name in the top left means unsaved changes. **Open**
+   (Ctrl+O) lists YOUR TRACKS first, then the bundled ones; a damaged file is listed greyed with the problem.
+   **New**, **Open**, **Back** and closing the window ask "Save changes?" (Save / Don't save / Cancel) when
+   something is unsaved.
+10. **Use your track:** **New training** and **Drive** now list YOUR TRACKS after the bundled ones (a track that cannot
+    be finished is shown with the reason in red and cannot be started). Train a few
+    generations on it; **Continue** keeps working even if you later delete the track file (the training keeps its own
+    copy).
+11. **Please send back:** anything that felt clumsy (which tool, what you expected), any message that was unclear,
+    a track that Test says is fine but cars cannot learn (or the other way round), the delay between an edit and the
+    status bar update (it should feel instant), and a saved .track file if something would not open.

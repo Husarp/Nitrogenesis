@@ -20,6 +20,13 @@ using Nitrogenesis.Sim.Racing;
 //                       --warm G trains G generations at MAX first
 //   learn-suite [--only NAME] [--threads T]
 //                       the §9 learning test on the bundled tracks (or one of them); exits 1 on any failure
+//   headless [--track X] [--pop P] [--threads T] [--gens G] [--save yes]
+//                       "Train to generation G" through the training host, as the app runs it without visuals:
+//                       generations/s with the history (and with --save yes, saving continuously)
+//   kill-test [--rounds N] [--gens G]
+//                       M3 acceptance: a child process trains and saves all the time and is killed N times (default
+//                       30) at random moments; every kill must leave a session that loads, and the final run (to
+//                       generation G, default 400) must equal an uninterrupted one. Exits 1 on any failure.
 // A track argument is a .track path or the name of a bundled track (looked up in tracks/).
 
 /// <summary>Grass cost for map checks: roadTopSpeed / grassTopSpeed with the default 45 % grass speed (PLAN §3.3).</summary>
@@ -48,6 +55,13 @@ try
                 options.Double("speed", 100), options.Int("seconds", 10), options.Has("warm") ? options.Int("warm", 0) : 0);
         case "learn-suite":
             return LearnSuite.Run(options.Int("threads", Environment.ProcessorCount - 1), options.Text("only"));
+        case "headless":
+            return HeadlessBench.Run(options.Track("s_curve"), options.Int("pop", 200), options.Int("threads", Environment.ProcessorCount - 1),
+                options.Int("gens", 100), options.Text("save") is "yes" or "true");
+        case "kill-test":
+            return KillTest.Run(options.Int("rounds", 30), options.Int("gens", 400));
+        case "save-stress":
+            return KillTest.Child(options.Text("dir") ?? throw new ArgumentException("--dir is required."), options.Int("gens", 400));
     }
 }
 catch (ArgumentException e)
@@ -55,7 +69,7 @@ catch (ArgumentException e)
     Console.Error.WriteLine(e.Message);
 }
 Console.Error.WriteLine("Usage: SimBench make-tracks [dir] | reference [dir] | train --track X --gens N [--pop P] [--threads T] [--seed S]" +
-                        " | bench [--track X] [--seconds S] [--repeats R] | view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G] | learn-suite [--only NAME] [--threads T]");
+                        " | bench [--track X] [--seconds S] [--repeats R] | view [--track X] [--pop P] [--threads T] [--speed S|max] [--seconds N] [--warm G] | learn-suite [--only NAME] [--threads T] | headless [--track X] [--pop P] [--threads T] [--gens G] [--save yes] | kill-test [--rounds N] [--gens G]");
 return 2;
 
 static int MakeTracks(string dir)

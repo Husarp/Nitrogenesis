@@ -26,6 +26,9 @@ public partial class DriveHud : CanvasLayer
 
     public string TrackName { get; set; } = "";
 
+    /// <summary>True when Esc and the button go back to the track editor (the hints and the button say so).</summary>
+    public bool BackToEditor { get; set; }
+
     public event Action? BackPressed;
 
     public bool DebugVisible
@@ -79,13 +82,13 @@ public partial class DriveHud : CanvasLayer
         _small.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.8f));
         center.AddChild(_small);
 
-        var hints = UiTheme.Label(Hints, 14, UiTheme.Muted);
+        var hints = UiTheme.Label(BackToEditor ? Hints.Replace("Esc menu", "Esc back to the editor") : Hints, 14, UiTheme.Muted);
         hints.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
         hints.Position = new Vector2(14, -30);
         hints.GrowVertical = Control.GrowDirection.Begin;
         root.AddChild(hints);
 
-        root.AddChild(Hud.MenuButton(() => BackPressed?.Invoke()));
+        root.AddChild(Hud.MenuButton(() => BackPressed?.Invoke(), BackToEditor ? "Editor  (Esc)" : "Menu  (Esc)"));
     }
 
     private static Label Row(GridContainer grid, string name, int size)
@@ -149,10 +152,10 @@ public partial class DriveHud : CanvasLayer
                 break;
             case PlayerPhase.Finished:
                 Show(Seconds(run.FinishTicks / RacingSettings.TicksPerSecond), UiTheme.Good,
-                    (run.NewBest && run.Finishes > 1 ? "FINISHED · new best!" : "FINISHED") + "\nR  restart     Esc  menu");
+                    (run.NewBest && run.Finishes > 1 ? "FINISHED · new best!" : "FINISHED") + "\nR  restart     Esc  " + (BackToEditor ? "editor" : "menu"));
                 break;
             case PlayerPhase.Crashed:
-                Show("CRASHED", UiTheme.Bad, "R  restart     Esc  menu");
+                Show("CRASHED", UiTheme.Bad, "R  restart     Esc  " + (BackToEditor ? "editor" : "menu"));
                 break;
         }
     }

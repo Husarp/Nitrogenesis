@@ -49,6 +49,12 @@ public partial class DriveView : Node2D
     public FrameAllocMeter Alloc => _alloc;
     public ViewCamera Camera => _camera;
 
+    /// <summary>True when the drive was opened from the track editor: Esc and the button say "editor" instead of "menu" (the owner decides where Back goes).</summary>
+    public bool BackToEditor { get; set; }
+
+    /// <summary>Debug: the same as pressing Esc.</summary>
+    public void DebugBack() => Back();
+
     public static DriveView Create(Track track) => new() { _track = track };
 
     public override void _Ready()
@@ -73,7 +79,7 @@ public partial class DriveView : Node2D
         AddChild(_camera);
         _camera.MakeCurrent();
 
-        _hud = new DriveHud { TrackName = _track.Name };
+        _hud = new DriveHud { TrackName = _track.Name, BackToEditor = BackToEditor };
         _hud.BackPressed += Back;
         AddChild(_hud);
     }

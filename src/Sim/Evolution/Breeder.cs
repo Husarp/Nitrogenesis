@@ -70,4 +70,24 @@ public sealed class Breeder
             Genome.Randomize(children.Genome(c), children.Shape, outputBias, _rng);
         }
     }
+
+    /// <summary>
+    /// "Fork from best only" (PLAN §5): child 0 is <paramref name="best"/> unchanged; every other child is a copy
+    /// of it mutated with <paramref name="p"/>'s chance and σ, drawing from its own stream
+    /// <c>SeedHash.Derive(generationSeed, c)</c>. Deterministic, so the fork's first generation can be rebuilt.
+    /// </summary>
+    public static void FromBest(ReadOnlySpan<float> best, Population children, EvolutionParams p, ulong generationSeed)
+    {
+        ArgumentNullException.ThrowIfNull(children);
+        if (best.Length != children.GenomeLength) throw new ArgumentException("The genome does not match the population's shape.", nameof(best));
+        var rng = new Xoshiro128StarStar(0);
+        best.CopyTo(children.Genome(0));
+        for (int c = 1; c < children.Size; c++)
+        {
+            rng.Reseed(SeedHash.Derive(generationSeed, (ulong)c));
+            Span<float> child = children.Genome(c);
+            best.CopyTo(child);
+            Mutation.Apply(child, p.MutationChance, p.MutationSigma, rng);
+        }
+    }
 }

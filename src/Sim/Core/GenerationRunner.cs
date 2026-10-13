@@ -24,7 +24,7 @@ namespace Nitrogenesis.Sim.Core;
 public sealed class GenerationRunner : IDisposable
 {
     private readonly IAgentMode _mode;
-    private readonly AgentScheduler _scheduler;
+    private AgentScheduler _scheduler;
     private readonly Mlp _brain;
     private readonly Breeder _breeder;
     private readonly float[] _outputBias;
@@ -115,6 +115,28 @@ public sealed class GenerationRunner : IDisposable
     /// <summary>Whether the population snapshot goes into each record (thinning is the history store's job).</summary>
     public bool KeepPopulationSnapshots { get; set; } = true;
 
+    /// <summary>
+    /// Whether the best car is re-simulated and recorded at each generation end (default). Off for rebuilding old
+    /// generations, which only need the scores; the record then has an empty recording.
+    /// </summary>
+    public bool RecordBestCar { get; set; } = true;
+
+    /// <summary>The evolution parameters that bred the current <see cref="Population"/> (they go into its record).</summary>
+    public EvolutionParams PopulationParams => _params;
+
+    /// <summary>
+    /// Changes the number of simulation threads (e.g. the headless count while training without visuals). Call it
+    /// from the thread that runs the generation, between <see cref="RunTicks"/> calls (also mid-generation):
+    /// results do not depend on the thread count.
+    /// </summary>
+    public void SetThreads(int threads)
+    {
+        if (threads == _scheduler.Workers) return;
+        var old = _scheduler;
+        _scheduler = new AgentScheduler(_mode, threads);
+        old.Dispose();
+    }
+
     /// <summary>True between <see cref="BeginGeneration"/> and <see cref="EndGeneration"/>.</summary>
     public bool IsRunning => _running;
 
@@ -151,7 +173,11 @@ public sealed class GenerationRunner : IDisposable
     /// Scores the agents where they are (normally all done), records the best car, updates the stagnation check
     /// and breeds the next generation. Returns the record of the generation that just ended.
     /// </summary>
-    public GenerationRecord EndGeneration()
+    /// <param name="breedWith">
+    /// Parameters for this breeding instead of the settings and the stagnation boost (rebuilding a stored
+    /// generation uses the parameters its record holds). The stagnation check still observes the generation.
+    /// </param>
+    public GenerationRecord EndGeneration(EvolutionParams? breedWith = null)
     {
         if (!_running) throw new InvalidOperationException("Call BeginGeneration first.");
         _running = false;
@@ -162,20 +188,26 @@ public sealed class GenerationRunner : IDisposable
 
         EvolutionSettings settings = Settings;
         Stagnation.Observe(stats.BestProgress, stats.BestFinishTicks, settings);
-        _params = EvolutionParams.From(settings, Stagnation.ConsumeBoost(settings));
+        bool boost = Stagnation.ConsumeBoost(settings);
+        _params = breedWith ?? EvolutionParams.From(settings, boost);
         Generation++;
 
         // Two independent jobs, overlapped so the other workers are not idle for both: recording the best car
         // (reads the population, writes only that agent's mode state) and copying the population on a worker,
         // breeding (reads the population and scores, writes the spare) on this thread.
         Population parents = _population;
-        bool keepSnapshot = KeepPopulationSnapshots;
+        bool keepSnapshot = KeepPopulationSnapshots, record = RecordBestCar;
         Recording? recording = null;
+        byte[]? encoded = null;
         float[]? snapshot = null;
         _scheduler.RunAlongside(
             () =>
             {
-                recording = RecordAgent(stats.BestIndex);
+                if (record)
+                {
+                    recording = RecordAgent(stats.BestIndex);
+                    encoded = recording.Encode();
+                }
                 snapshot = keepSnapshot ? (float[])parents.Weights.Clone() : null;
             },
             () => _breeder.Breed(parents, _scores, _spare, _params, GenerationSeed(Generation), _outputBias));
@@ -189,7 +221,9 @@ public sealed class GenerationRunner : IDisposable
             Params = madeWith,
             Stats = stats,
             BestGenome = parents.CopyGenome(stats.BestIndex),
-            BestRecording = recording!,
+            BestRecording = recording ?? new Recording(),
+            EncodedRecording = encoded,
+            Ticks = (int)_elapsed,
             PopulationSnapshot = snapshot,
         };
     }

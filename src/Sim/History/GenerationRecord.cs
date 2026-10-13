@@ -36,6 +36,13 @@ public sealed class GenerationRecord
     public required GenerationStats Stats { get; init; }
     public required Genome BestGenome { get; init; }
     public required Recording BestRecording { get; init; }
+    /// <summary>
+    /// Ticks the generation ran before it was scored: the last car's stop tick, or fewer when it was ended early
+    /// ("Next generation", PLAN §6.2). Rebuilding the generation runs exactly this many ticks.
+    /// </summary>
+    public int Ticks { get; init; }
+    /// <summary>The best car's recording, already encoded (<see cref="Recording.Encode"/>), or null when not done yet.</summary>
+    public byte[]? EncodedRecording { get; init; }
     /// <summary>All genomes of the generation (agent-major, as in <see cref="Population.Weights"/>), or null once thinned.</summary>
     public float[]? PopulationSnapshot { get; set; }
 }

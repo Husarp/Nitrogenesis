@@ -26,7 +26,7 @@ stop and ask the owner. Do not improvise.
 | Sound | Simple UI sounds. Engine sound only for the followed car and the player's car. |
 | FPS | Cap 24 / 30 / 45 / 60 / 75 / 120 / unlimited / match monitor; **default 60**. |
 | Resources | User can cap CPU use (threads, priority) and the memory used for history. |
-| Release | Follows `~/coding_projects/APP-STANDARDS.md` (Setup.exe install/update, update banner, GitHub releases). |
+| Release | Follows `~/projects/coding_projects/APP-STANDARDS.md` (Setup.exe install/update, update banner, GitHub releases). |
 
 Out of scope for v1: laps, online features, car-to-car collisions (cars are ghosts to each other),
 champions library, deep RL (PPO etc.), Android.
