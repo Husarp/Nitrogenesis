@@ -333,19 +333,19 @@ public sealed class Session
 
     /// <summary>
     /// First generation of the run of generations, in <paramref name="branch"/>'s lineage and ending at
-    /// <paramref name="generation"/>, that share its config hash: where best-ever, stagnation and the graph baseline
-    /// restart (PLAN §5).
+    /// <paramref name="generation"/>, that share its config hash and number of cars: where best-ever, stagnation and the
+    /// graph baseline restart (PLAN §5, §6.4).
     /// </summary>
     public int SegmentRunStart(string branch, int generation)
     {
         lock (SyncRoot)
         {
-            string hash = SegmentAt(branch, generation).Config.Hash;
+            var target = SegmentAt(branch, generation);
             int g = generation;
             while (true)
             {
                 var seg = SegmentAt(branch, g);
-                if (seg.Config.Hash != hash) return g + 1;
+                if (!SameRun(seg, target)) return g + 1;
                 if (seg.FirstGeneration <= 0) return 0;
                 g = seg.FirstGeneration - 1;
             }
@@ -353,8 +353,8 @@ public sealed class Session
     }
 
     /// <summary>
-    /// The generations of <paramref name="branch"/>'s lineage where a new segment run starts (its config hash differs
-    /// from the generation before), ascending, up to its current generation (the active branch) or its last stored
+    /// The generations of <paramref name="branch"/>'s lineage where a new segment run starts (its config hash or number of
+    /// cars differs from the generation before), ascending, up to its current generation (the active branch) or its last stored
     /// one: the graph's divider lines (PLAN §5).
     /// </summary>
     public List<int> SegmentRunStarts(string branch)
@@ -372,10 +372,13 @@ public sealed class Session
             }
             var starts = new List<int>();
             foreach (int g in candidates)
-                if (g > 0 && g <= end && SegmentAt(branch, g).Config.Hash != SegmentAt(branch, g - 1).Config.Hash) starts.Add(g);
+                if (g > 0 && g <= end && !SameRun(SegmentAt(branch, g), SegmentAt(branch, g - 1))) starts.Add(g);
             return starts;
         }
     }
+
+    /// <summary>Two segments continue one run (no divider, no reset): same config hash and the same number of cars.</summary>
+    public static bool SameRun(SegmentEntry a, SegmentEntry b) => a.Config.Hash == b.Config.Hash && a.PopulationSize == b.PopulationSize;
 
     /// <summary>Stats of the stored generations from <see cref="SegmentRunStart"/> up to (not including) <paramref name="generation"/>.</summary>
     public List<GenerationStats> SegmentRunStats(string branch, int generation)
@@ -454,7 +457,8 @@ public sealed class Session
     /// Starts a new segment on the active branch at the current generation (a SimConfig change at a generation
     /// boundary, PLAN §5). A segment that starts at the same generation and has not run yet is replaced. Returns it.
     /// </summary>
-    public SegmentEntry StartSegment(SimConfig config, Track track, int populationSize)
+    /// <param name="population">The resized population when the new segment changes the cars per generation (<see cref="PopulationResize"/>), which becomes the current one.</param>
+    public SegmentEntry StartSegment(SimConfig config, Track track, int populationSize, Population? population = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(track);
@@ -464,12 +468,14 @@ public sealed class Session
             int g = Current.Generation;
             if (History.Get(ActiveBranch, g) is not null)
                 throw new InvalidOperationException($"Generation {g} of '{ActiveBranch}' already ran; a new segment starts at the next one.");
+            if ((population ?? Current.Population).Size != populationSize)
+                throw new ArgumentException("The population does not have the segment's number of cars.", nameof(population));
             int index = _segments.FindLastIndex(s => s.Branch == ActiveBranch && s.FirstGeneration == g);
             int id = index >= 0 ? _segments[index].Id : NextSegmentId();
             var segment = new SegmentEntry(id, ActiveBranch, g, config, track, populationSize);
             if (index >= 0) _segments[index] = segment;
             else _segments.Add(segment);
-            Current = Current with { Segment = id };
+            Current = Current with { Segment = id, Population = population ?? Current.Population };
             Changed();
             return segment;
         }
@@ -538,7 +544,11 @@ public sealed class Session
             CheckWritable();
             var (generation, parameters) = ResumePoint(branch);
             var segment = SegmentAt(branch, generation);
-            if (population.Shape != segment.Config.Brain) throw new ArgumentException("The population does not fit the segment's brain.", nameof(population));
+            if (population.Shape != segment.Config.Brain || (segment.PopulationSize > 0 && population.Size != segment.PopulationSize))
+                throw new ArgumentException("The population does not fit the segment's brain or number of cars.", nameof(population));
+            // A segment the branch started after its resume point never ran (it was left before that generation ended): the
+            // branch continues under the segment it resumes in, so that one goes (else its generations would be stored under it).
+            _segments.RemoveAll(s => s.Branch == branch && s.FirstGeneration > generation);
             ActiveBranch = branch;
             Current = new PopulationEntry(branch, generation, segment.Id, parameters, population);
             Changed();

@@ -17,28 +17,28 @@ using Nitrogenesis.View;
 namespace Nitrogenesis;
 
 /// <summary>
-/// The app root: switches between the main menu, the track picker, the Sessions list, the training view and the drive
-/// view; opens sessions (PLAN §5.1) and saves the open one before the app closes.
+/// The app root: switches between the main menu, the track picker, the Sessions list, the training view, the drive
+/// view and the race (ghost picker + race view); opens sessions (PLAN §5.1) and saves the open one before the app closes.
 /// </summary>
 /// <remarks>
 /// Command line (after <c>--</c>), every build (measuring on the target machine): <c>--check-tracks</c> lists the
 /// bundled tracks and exits (the export check), <c>--track NAME</c> (skip the menu and start a new training, saved like
 /// one from the menu unless <c>--no-save</c>), <c>--continue</c> (open the last session), <c>--session NAME</c>,
-/// <c>--sessions</c> (the Sessions list), <c>--drive NAME</c>, <c>--picker [drive]</c>, <c>--editor [S|M|L|TRACKNAME]</c> (open the track editor at once, see <see cref="EditorView.DebugDo"/> for its --do verbs), <c>--speed X|max</c>, <c>--threads N</c>,
+/// <c>--sessions</c> (the Sessions list), <c>--drive NAME</c>, <c>--race NAME [--ghosts all|none|N]</c> (race yourself on that track; the ghosts are the first N found, else the picker opens), <c>--picker [drive|race]</c>, <c>--editor [S|M|L|TRACKNAME]</c> (open the track editor at once, see <see cref="EditorView.DebugDo"/> for its --do verbs), <c>--speed X|max</c>, <c>--threads N</c>,
 /// <c>--headless-threads N</c>, <c>--pop N</c>, <c>--seed S</c>, <c>--history-mb MB</c> (history memory limit, PLAN §4;
-/// default 1024 until the Settings screen), <c>--autosave-seconds S</c> (default 120; 0 = save whenever the last save
+/// default: the Settings value, 1024 MB unless changed), <c>--autosave-seconds S</c> (default 120; 0 = save whenever the last save
 /// finished, for crash tests), <c>--zoom Z</c>, <c>--timings</c>, <c>--stats</c>,
 /// <c>--select N</c>, <c>--train-to N</c> (train without visuals to generation N once the training is ready, as the
 /// Train to… button does; for timing exported builds), <c>--quit-after SECONDS</c>. The data folder is %APPDATA%\Nitrogenesis unless the environment
 /// variable NITROGENESIS_DATA names another. Debug builds only (they inject input or write files):
-/// <c>--click-car N@T</c>, <c>--press KEY@A-B,…</c>, <c>--autopilot</c>, <c>--screenshot PATH --after S</c> (or
+/// <c>--monitor-hz HZ</c> (the refresh rate the FPS hint sees), <c>--click-car N@T</c>, <c>--press KEY@A-B,…</c>, <c>--autopilot</c>, <c>--screenshot PATH --after S</c> (or
 /// PATH@T,…), and <c>--do "step;step;…"</c>: a script of training-control steps, each run when the previous one is done
 /// (see <see cref="RunScriptStep"/>).
 /// </remarks>
 public partial class Main : Node
 {
     /// <summary>Flags that inject input or write files: dropped in release builds.</summary>
-    private static readonly string[] DebugOnlyArgs = ["click-car", "press", "autopilot", "screenshot", "after", "do"];
+    private static readonly string[] DebugOnlyArgs = ["click-car", "press", "autopilot", "screenshot", "after", "do", "monitor-hz"];
 
     private Node? _screen;
     private EditorView? _parkedEditor; // the editor while the drive view from its Drive button is up (out of the tree, not freed)
@@ -66,6 +66,10 @@ public partial class Main : Node
     private Task<Session>? _loading;
     private string? _loadingName;
 
+    // Looking for the ghosts of a track in the saved sessions, in the background.
+    private sealed record GhostScan(Track Track, List<GhostEntry> Ghosts, List<string> Problems);
+    private Task<GhostScan>? _scanning;
+
     // The --do script.
     private readonly Queue<string> _script = new();
     private double _scriptReadyAt;
@@ -86,6 +90,9 @@ public partial class Main : Node
             Callable.From(() => RequestQuit(confirm: true)).CallDeferred();
         })).ToArray();
         _args = ParseArgs(OS.GetCmdlineUserArgs());
+        if (_args.ContainsKey("monitor-hz")) FrameRate.HzOverride = Double("monitor-hz", 0);
+        AddChild(new Sfx()); // the interface click, hooked to every button that enters the tree
+        AppRuntime.Apply();  // FPS cap, VSync, priority and sound level from settings.json
 
         if (_args.ContainsKey("check-tracks"))
         {
@@ -108,6 +115,18 @@ public partial class Main : Node
             else
             {
                 GD.PushError($"--editor: no track '{editorArg}'");
+                ShowMenu();
+            }
+        }
+        else if (_args.TryGetValue("race", out string? raceName))
+        {
+            if (FindTrack(raceName) is { } raceTrack)
+            {
+                ScanForGhosts(raceTrack);
+            }
+            else
+            {
+                GD.PushError($"--race: no track '{raceName}'");
                 ShowMenu();
             }
         }
@@ -143,6 +162,7 @@ public partial class Main : Node
         else if (_args.ContainsKey("picker"))
         {
             if (_args["picker"].Equals("drive", StringComparison.OrdinalIgnoreCase)) ShowPicker("Drive", StartDrive);
+            else if (_args["picker"].Equals("race", StringComparison.OrdinalIgnoreCase)) ShowPicker("Race yourself", ScanForGhosts);
             else ShowPicker("New training", StartNewTraining);
         }
         else
@@ -201,9 +221,18 @@ public partial class Main : Node
         menu.NewTraining += () => ShowPicker("New training", StartNewTraining);
         menu.Continue += ContinueLatest;
         menu.Sessions += () => ShowSessions();
-        menu.Drive += () => ShowPicker("Drive", StartDrive);
+        menu.Race += () => ShowPicker("Race yourself", ScanForGhosts);
         menu.Editor += () => ShowEditor(EditDocument.New(MapSize.M));
+        menu.Settings += ShowSettings;
         Switch(menu);
+    }
+
+    private void ShowSettings()
+    {
+        RenderingServer.SetDefaultClearColor(UiTheme.Background);
+        var screen = SettingsScreen.Create();
+        screen.Back += ShowMenu;
+        Switch(screen);
     }
 
     private void ShowEditor(EditDocument doc, string? filePath = null)
@@ -264,17 +293,26 @@ public partial class Main : Node
         Switch(screen);
     }
 
-    private TrainingHostOptions Options(SessionFolder? folder) => new()
+    /// <summary>What a training starts with: the Settings screen's values (PLAN §6.4), unless a command-line flag says otherwise.</summary>
+    private TrainingHostOptions Options(SessionFolder? folder)
     {
-        Threads = Int("threads", CpuInfo.VisualThreads()),
-        HeadlessThreads = Int("headless-threads", Math.Max(1, System.Environment.ProcessorCount - 1)),
-        PopulationSize = Int("pop", 200),
-        Seed = _args.TryGetValue("seed", out string? s) && ulong.TryParse(s, out ulong seed) ? seed : (ulong)Random.Shared.NextInt64(),
-        Speed = _args.TryGetValue("speed", out string? sp) && sp.Equals("max", StringComparison.OrdinalIgnoreCase) ? double.PositiveInfinity : Double("speed", 1),
-        Folder = folder,
-        HistoryMemoryLimit = _args.ContainsKey("history-mb") ? (long)(Double("history-mb", 1024) * 1048576) : HistoryStore.DefaultMemoryLimit,
-        AutosaveInterval = _args.ContainsKey("autosave-seconds") ? TimeSpan.FromSeconds(Double("autosave-seconds", 120)) : TimeSpan.FromMinutes(2),
-    };
+        var settings = AppRuntime.Settings;
+        return new()
+        {
+            Threads = Int("threads", settings.VisualThreads),
+            HeadlessThreads = Int("headless-threads", settings.HeadlessThreads),
+            PopulationSize = Int("pop", settings.PopulationSize),
+            Hidden1 = settings.Hidden1,
+            Hidden2 = settings.Hidden2,
+            Settings = settings.Racing,
+            Evolution = settings.Evolution,
+            Seed = _args.TryGetValue("seed", out string? s) && ulong.TryParse(s, out ulong seed) ? seed : (ulong)Random.Shared.NextInt64(),
+            Speed = _args.TryGetValue("speed", out string? sp) && sp.Equals("max", StringComparison.OrdinalIgnoreCase) ? double.PositiveInfinity : Double("speed", settings.Speed),
+            Folder = folder,
+            HistoryMemoryLimit = _args.ContainsKey("history-mb") ? (long)(Double("history-mb", 1024) * 1048576) : settings.HistoryLimitBytes,
+            AutosaveInterval = _args.ContainsKey("autosave-seconds") ? TimeSpan.FromSeconds(Double("autosave-seconds", 120)) : TimeSpan.FromMinutes(2),
+        };
+    }
 
     /// <summary>New training: a new session folder ("&lt;track&gt; date time"), saved at once and then automatically.</summary>
     private void StartNewTraining(Track track)
@@ -402,11 +440,83 @@ public partial class Main : Node
         if (_args.ContainsKey("timings") || _args.ContainsKey("screenshot")) view.ShowDebug(true);
     }
 
+    // ---------------------------------------------------------------- race yourself
+
+    /// <summary>Race yourself, step 2: looks in the saved sessions for ghosts of the track (a big history takes a moment) and opens the ghost picker.</summary>
+    private void ScanForGhosts(Track track)
+    {
+        RenderingServer.SetDefaultClearColor(UiTheme.Background);
+        var screen = new CenterContainer { Theme = UiTheme.Theme };
+        screen.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        screen.AddChild(UiTheme.Label("Looking for ghosts…", 22, UiTheme.Muted));
+        Switch(screen);
+        string hash = TrackHash.Compute(track);
+        _scanning = Task.Run(() =>
+        {
+            var problems = new List<string>();
+            return new GhostScan(track, GhostCatalog.Scan(_store, hash, problems), problems);
+        });
+    }
+
+    private void FinishScanning()
+    {
+        var task = _scanning!;
+        _scanning = null;
+        if (task.Exception?.GetBaseException() is { } error)
+        {
+            ShowMenu();
+            Modal.Message(_screen!, "Could not look for ghosts", error.Message);
+            return;
+        }
+        var scan = task.Result;
+        foreach (string problem in scan.Problems) GD.PushWarning($"Ghosts: {problem}");
+        if (_args.TryGetValue("ghosts", out string? count))
+        {
+            // --ghosts all|none|N: skip the picker (measuring and screenshots)
+            int n = count.Equals("none", StringComparison.OrdinalIgnoreCase) ? 0 : count.Equals("all", StringComparison.OrdinalIgnoreCase) ? Race.MaxGhosts
+                : int.TryParse(count, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0;
+            StartRace(scan, scan.Ghosts.Take(Math.Min(n, Race.MaxGhosts)).ToList());
+            return;
+        }
+        ShowGhostPicker(scan);
+    }
+
+    private void ShowGhostPicker(GhostScan scan)
+    {
+        RenderingServer.SetDefaultClearColor(UiTheme.Background);
+        var picker = GhostPicker.Create(scan.Track, scan.Ghosts);
+        picker.Picked += chosen => StartRace(scan, chosen);
+        picker.Back += () => ShowPicker("Race yourself", ScanForGhosts);
+        Switch(picker);
+    }
+
+    private void StartRace(GhostScan scan, IReadOnlyList<GhostEntry> chosen)
+    {
+        Race race;
+        try
+        {
+            race = Race.Create(scan.Track, chosen);
+        }
+        catch (InvalidDataException e)
+        {
+            ShowGhostPicker(scan);
+            Modal.Message(_screen!, "Could not start the race", $"A ghost's recording is damaged: {e.Message}");
+            return;
+        }
+        var view = RaceView.Create(race, scan.Track);
+        view.BackRequested += () => ShowGhostPicker(scan);
+        Switch(view);
+        if (_args.ContainsKey("zoom")) view.Camera.UserZoom = (float)Double("zoom", 2);
+        if (_args.ContainsKey("autopilot")) view.EnableAutopilot();
+    }
+
     // ---------------------------------------------------------------- quitting
 
     public override void _Notification(int what)
     {
         if (what == NotificationWMCloseRequest) RequestQuit(confirm: true);
+        else if (what == NotificationApplicationFocusOut) FrameRate.SetFocused(false); // PLAN §4: 15 FPS while unfocused
+        else if (what == NotificationApplicationFocusIn) FrameRate.SetFocused(true);
     }
 
     /// <summary>Closes the app after saving the open session (PLAN §5.1 "on exit"), see <see cref="AfterSaving"/>.</summary>
@@ -553,6 +663,7 @@ public partial class Main : Node
     {
         if (RunAfterSaving()) return;
         if (_loading is { IsCompleted: true }) FinishOpening();
+        if (_scanning is { IsCompleted: true }) FinishScanning();
         if (_args.Count == 0) return;
         long allocBefore = GC.GetAllocatedBytesForCurrentThread();
         _clock += delta;
@@ -591,14 +702,14 @@ public partial class Main : Node
     /// <summary>Runs the next --do step once the previous step's minimum wait is over and (for most steps) the screen is idle.</summary>
     private void RunScript()
     {
-        if (_script.Count == 0 || _clock < _scriptReadyAt || _loading is not null) return;
+        if (_script.Count == 0 || _clock < _scriptReadyAt || _loading is not null || _scanning is not null) return;
         string step = _script.Peek();
         int colon = step.IndexOf(':');
         string verb = colon < 0 ? step : step[..colon], arg = colon < 0 ? "" : step[(colon + 1)..];
         // While the training view is being left only the steps that watch or answer a box run (the "could not save" box).
         if (_afterSave is not null && verb is not ("wait" or "shot" or "modal-close" or "modal-ok" or "modal-button")) return;
         // These run at once; the others wait until the training view has nothing in progress (train-to, a rebuild…).
-        bool immediate = verb is "wait" or "shot" or "fingerprint" or "cancel" or "quit" or "close-request" or "modal-close" or "modal-ok" or "modal-button";
+        bool immediate = verb is "wait" or "shot" or "fingerprint" or "fps" or "focus" or "cancel" or "quit" or "close-request" or "modal-close" or "modal-ok" or "modal-button";
         if (!immediate && _screen is TrainingView view && !view.IsIdle) return;
         if (!immediate && _screen is EditorView { DebugBusy: true }) return;
         if ((!immediate || verb == "shot") && _screen is EditorView { TestRunning: true }) return; // wait for the Test result
@@ -612,7 +723,7 @@ public partial class Main : Node
     /// <summary>
     /// One --do step. Main's own: <c>wait:S</c>, <c>shot:PATH</c>, <c>fingerprint</c>, <c>quit</c>, <c>menu</c>,
     /// <c>continue</c>, <c>sessions</c>, <c>open:NAME</c>, <c>rename:NEW</c> (the newest session), <c>delete:NAME</c>,
-    /// <c>pick:NAME</c> and <c>start</c> (track picker), <c>modal-button:LABEL</c>, <c>rename-dialog</c> and <c>delete-dialog</c> (Sessions list, selected row), <c>new:TRACK</c>. Everything else goes to <see cref="TrainingView.DebugDo"/> (trainto:N, fork:G,
+    /// <c>pick:NAME</c> and <c>start</c> (track picker), <c>settings</c> (menu), <c>set:KEY=VALUE</c>, <c>preset:NAME</c>, <c>tab:N</c> and <c>back</c> (Settings screen), <c>focus:on|off</c>, <c>fps</c>, <c>ghosts:all|none|0,2</c>, <c>ghost-click:N</c> and <c>race</c> (ghost picker), <c>back</c> (drive and race views), <c>modal-button:LABEL</c>, <c>rename-dialog</c> and <c>delete-dialog</c> (Sessions list, selected row), <c>new:TRACK</c>. Everything else goes to <see cref="TrainingView.DebugDo"/> (trainto:N, fork:G,
     /// forkbest:G, switch:NAME, panel[:tab], graph, replay-best:G, replay-gen:G, keep-training:on, back, mode:step, next,
     /// nextgen, pause, resume, speed:X, mutation:X, timelimit:S, traintodialog, forkdialog:G, modal-close, …).
     /// </summary>
@@ -667,8 +778,47 @@ public partial class Main : Node
             case "back" when _screen is HistoryScreen history:
                 history.BackFromReplay();
                 return null;
+            case "settings" when _screen is MainMenu:
+                ShowSettings();
+                return null;
+            case "set" when _screen is SettingsScreen settingsScreen:
+            {
+                string[] kv = arg.Split('=', 2);
+                return kv.Length == 2 ? settingsScreen.DebugSet(kv[0], kv[1]) : "set:KEY=VALUE";
+            }
+            case "preset" when _screen is SettingsScreen settingsScreen:
+                settingsScreen.DebugPreset(arg);
+                return null;
+            case "scroll" when _screen is SettingsScreen settingsScreen:
+                settingsScreen.DebugScroll(int.Parse(arg, CultureInfo.InvariantCulture));
+                return null;
+            case "tab" when _screen is SettingsScreen settingsScreen:
+                settingsScreen.DebugTab(int.Parse(arg, CultureInfo.InvariantCulture));
+                return null;
+            case "back" when _screen is SettingsScreen settingsScreen:
+                settingsScreen.DebugBack();
+                return null;
+            case "focus": // the window gains or loses the focus (on|off)
+                FrameRate.SetFocused(arg != "off");
+                GD.Print($"focus {arg}: Engine.MaxFps={Engine.MaxFps} vsync={DisplayServer.WindowGetVsyncMode()}");
+                return null;
+            case "fps":
+                GD.Print($"fps: cap={Engine.MaxFps} current={Engine.GetFramesPerSecond():0} monitorHz={FrameRate.MonitorHz} vsync={DisplayServer.WindowGetVsyncMode()} priority={CpuPriority.Current()} clicks={Sfx.ClicksPlayed}");
+                return null;
             case "back" when _screen is DriveView drive:
                 drive.DebugBack();
+                return null;
+            case "back" when _screen is RaceView race:
+                race.DebugBack();
+                return null;
+            case "ghosts" when _screen is GhostPicker ghostPicker:
+                ghostPicker.DebugSelect(arg);
+                return null;
+            case "ghost-click" when _screen is GhostPicker ghostPicker:
+                ghostPicker.DebugClick(int.Parse(arg, CultureInfo.InvariantCulture));
+                return null;
+            case "race" when _screen is GhostPicker ghostPicker:
+                ghostPicker.DebugStart();
                 return null;
             case "key": // a real key press through Godot's input: key:Escape, key:T …
             {
@@ -837,7 +987,7 @@ public partial class Main : Node
             var r = d.Run;
             GD.Print(string.Create(CultureInfo.InvariantCulture,
                 $"stats t={_clock:0.0}s fps={_statsFrames / _statsTimer:0.0} phase={r.Phase} time={r.TimeSeconds():0.00}s progress={r.Progress * 100:0}% " +
-                $"speed={r.Car.ForwardSpeed:0.0} throttle={r.Controls.Throttle:0.00} steer={r.Controls.Steer:0.00} attempts={r.Attempts} " +
+                $"speed={r.Car.ForwardSpeed:0.0} throttle={r.Controls.Throttle:0.00} steer={r.Controls.Steer:0.00} attempts={r.Attempts} engine={d.Engine.Sounding}/{d.Engine.PitchScale:0.00} " +
                 $"alloc={_statsAlloc}B (max {_statsAllocMax}B/frame) gc0={d.Alloc.Gen0}"));
         }
         _statsFrames = 0;

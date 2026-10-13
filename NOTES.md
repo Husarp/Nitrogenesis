@@ -1246,3 +1246,273 @@ now final: generated M tracks take 24–33 s with them, so nothing was retuned a
    "Labyrinth (generated)" (first finish around generation 25–50).
 8. **Please send back**: a template whose tracks look wrong or boring, a generated track the cars cannot learn, and any seed
    where Generate failed although the parameters looked reasonable (with the seed and parameters).
+
+## M6 — Race yourself (2026-10-13)
+
+Done: **Race yourself** in the main menu (it replaces the old "Drive" entry; Drive stays behind the editor's Drive button and `--drive`):
+track picker → **ghost picker** → race. Sim side (`src/Sim/Racing/`, all with tests): `GhostCatalog.cs` (`GhostEntry`, `GhostPhysics`,
+`GhostCatalog.Scan` / `FromSession`), `RaceGhost.cs`, `RaceSplits.cs` (+ `SplitDelta`), `Race.cs` (`Race`, `RaceStanding`). App side:
+`app/Ui/GhostPicker.cs`, `app/View/RaceView.cs`, `RaceHud.cs`, `RaceResults.cs`; `Main` (scan on a background task, `--race`),
+`MainMenu`, and `DriveView.ReadDevices` made `internal` so the race reads the keyboard and gamepad exactly like Drive (the M2
+`PlayerControls` / `PlayerRun` are reused as they are: 0.1 s key ramp, stick steers, triggers throttle/brake, R restarts).
+726 tests green (Debug and Release; 697 before: `RaceTests` 21, `GhostCatalogTests` 8). SimVersion stays 2, no physics or default changed,
+every pinned hash unchanged. `dotnet build app` and `dotnet build tools/SimBench`: 0 warnings, 0 errors.
+
+### How each PLAN §6.5 point is met
+- **Pick a track, pick ghosts from any session/segment whose trackHash matches, current / older generations, several, none.**
+  `GhostCatalog.Scan(store, trackHash)` reads each session's header first (cheap: does any segment have this `Config.TrackHash`?), loads
+  only those sessions (`Session.Load` with a 64 MB history limit, since ghosts need no population snapshots) and lists, per branch (main
+  first), every stored generation with a recording whose *segment* has the hash, newest first. A fork's own history starts where it was
+  forked, so no generation is listed twice. The track hash ignores the track's name (`TrackHash`), so a renamed copy still matches. The
+  picker groups the rows by session; the first row of each branch says "(latest)"; click rows to toggle them (up to 8, `Race.MaxGhosts`),
+  none = "Race alone". A row shows "gen N · 12.70 s" or "gen N · no finish"; its tooltip has the segment's physics.
+- **Ghost = playback of the generation's best car.** The recording (`HistoryEntry.RecordingBytes`) is decoded when the race starts. A ghost
+  that finished uses the stats' `BestFinishTicks` as its time (the best-scoring car is always the fastest finisher), so its time is
+  sub-tick exact like the player's.
+- **Physics.** `GhostPhysics.Choose`: no ghosts → default `RacingSettings`; else the first chosen ghost's segment settings. Two chosen ghosts
+  count as different physics when SimVersion, max speed, acceleration, turn rate, grass speed fraction, grass grip or walls mode differ
+  (sensors, stall time and time limit do not move a player's car). Then a warning is shown in the picker and in the race HUD ("You drive
+  with the physics of the first one (gen N · session)"). "First" = the first one in the picker's list order (top-most chosen).
+- **Countdown, highlighted car, route lines, live timer.** 3-2-1-GO from `PlayerRun` (R restarts with a 1 s countdown, as in Drive). You are
+  a white car with an orange outline and an orange route; every ghost has its own colour (8 colours), a car drawn at 80 % opacity and a route
+  line of its colour that grows with it. The timer is live in the HUD.
+- **Splits.** `RaceSplits`: the player's tick when progress first crosses 25 / 50 / 75 % (progress = best distance so far, like a training
+  car, so a split is set once). Each ghost's split ticks are worked out when the race is built from its recording on the *race's* distance
+  field, so everyone is measured the same way. The HUD table shows your split times and, per ghost, `player − ghost` in seconds (green "−" =
+  ahead, red "+" = behind, grey 0.00 = level, "out" = the ghost never got that far, so you are ahead).
+- **Walls block, danger kills, R at any time.** `PlayerRun` + `CarPhysics` with the chosen settings (wall mode comes from the ghost's
+  segment, default Block). "CRASHED" shows; R (or gamepad Y/Start) restarts from any state, also while the results are open. Esc / Back
+  (button, gamepad Back) returns to the ghost picker.
+- **Results.** When you finish, the results panel replaces the HUD: places, names, times and the gap to the winner; ghosts that did not finish
+  come after the finishers with their progress. The map is zoomed to fit beside the panel and shows the route of every car (yours in
+  orange); wheel and drag still work. "Race again (R)" restarts at once; "Back (Esc)" goes to the ghost picker. Ordering is
+  `RaceStanding.Order` (finishers by time, a tie goes to the player, then the others by progress).
+- **Input.** As M2 (see above).
+
+### Decisions
+- **The race clock** (`Race.Ticks`): runs while the player drives, keeps running after the player crashed (the ghosts go on, until R), stops
+  when the player finishes; it is 0 through the countdown, so ghosts wait on the line. Ghosts are drawn between the last two ticks by the same
+  render fraction as the player's car (`Race.GhostPose`), so they stay level with your car at any frame rate. A finished ghost stays on the
+  finish; one that did not finish disappears when its recording ends (like a crashed car in training).
+- **Pure functions of the tick**: ghost pose, status and splits depend only on the recording and the tick, so two races with the same inputs
+  agree bit for bit (test `TwoRacesWithTheSameInputShowTheSameGhostsAtEveryTick`). `RecordingPlayback` (the replay's own clock) was not used:
+  it advances by real time, a race needs the player's tick; `RaceGhost.Pose` uses the same interpolation rule (`SnapshotInterpolation.LerpAngle`).
+- **Results appear only when you finish.** After a crash you have R and Esc; there is no "results" for a DNF.
+- Max 8 ghosts (HUD rows, colours); the picker disables Race above that.
+- A session of another SimVersion is listed (recordings always play), and you drive with this version's physics code and that segment's
+  settings; no extra warning when only one old ghost is chosen (SimVersion is 2 for every session so far).
+- The ghost list is scanned once per track and kept while you go back from the race to the picker (Back from the picker rescans).
+- New debug flags (`Main`): `--race NAME [--ghosts all|none|N]` (scan, then the first N ghosts or the picker), `--picker race`, and `--do`
+  verbs `ghosts:all|none|0,2`, `ghost-click:N` (a real click on that row), `race`, `back`.
+
+### Checks (this Linux box, xvfb + llvmpipe, 1280×720, `NITROGENESIS_DATA` in /tmp)
+| Run | Result |
+|---|---|
+| two sprint sessions trained with the app (`--track sprint --train-to 14`, 357 and 304 generations); `--picker race` → pick sprint → ghost picker | lists both sessions' generations newest first, "(latest)" on the first row of each; selection by script and by real clicks toggles rows; "N ghosts chosen" / "Race alone" |
+| a session made with a physics change in the middle (tests' `ChangeSettings`: max speed 18 → 24), ghosts from both segments | the orange physics warning in the picker and the HUD; the player's car tops out at 24 cells/s |
+| `--race sprint --ghosts 5` (and 8), no input / `--autopilot` | countdown, GO, ghost cars and routes in their colours, splits fill in; the autopilot finished in 9.70 s there (review re-check on a default-physics session: 12.77 s, the reference time, against ghosts of 12.78 s) and the results show places, times, gaps and every route |
+| R during the race and on the results | attempt 2, countdown, splits cleared, results hidden, routes restart |
+| Esc chain: race → ghost picker → track picker → menu; `--race hairpins --ghosts none`; `--drive sprint` | all work (no ghosts: splits for you only) |
+Screenshots were kept in /tmp only.
+
+### Deviations
+- **The menu says "Race yourself" instead of "Race (play yourself)"** (§6.1) and replaces the M2 "Drive" entry (a race without ghosts is the same drive).
+- **Splits are in whole ticks** (1/60 s): both the player's and a ghost's split are the tick at which progress first reached the share.
+- No Windows build and no export were made for M6 (not asked for). The four new app scripts have their `.uid` files (made by the review with `godot --headless --path app --import`, as for the earlier milestones).
+- The race view has no allocation meter (the 0 B/frame check is for the training view and Drive); it allocates only the HUD's few strings.
+
+### Not proven
+- The gamepad path in the race (shares `DriveView.ReadDevices`, tested only through Drive in M2) and real keyboard driving in the race (the
+  `--press` check in this run drove W only; `PlayerControls` is unit-tested).
+- Frame rate with 8 ghosts on the laptop (llvmpipe frame times mean nothing here). Per frame the race copies up to 8 × 2048 route points
+  into the overlays and redraws 9 polylines; if it stutters, thin the ghosts' routes further.
+- A session so large that scanning takes seconds: the "Looking for ghosts…" screen shows meanwhile, but there is no cancel.
+
+### Review (Opus, 2026-10-13)
+Checked against PLAN §6.5 / §5 / §2.1: segment-level track-hash matching, the physics-mismatch rule, first-crossing splits and their
+sign (player − ghost, negative = ahead), result order, ghost/player tick alignment through the countdown, crash and restart, the
+background scan (Sim objects only, no Godot calls off the main thread), node and event lifetimes. No logic bug found. Fixed: the four
+new app scripts had no `.uid` files (generated). Re-run: 726 tests green; `dotnet build app` / `tools/SimBench` 0 warnings; under xvfb a
+42-generation sprint session → picker (4 ghosts by script) → race with the autopilot → splits (e.g. gen 3 −0.08 / 0.00 / −0.05) →
+R → attempt 2 with cleared splits → Esc → picker; `--ghosts all` with 8 ghosts to the results; a keyboard (`--press`) drive alone.
+Left as they are (noted, not bugs): Back from the race reopens the picker with nothing chosen; the scan loads each matching session
+in full (snapshots included) before keeping the recordings, so many big sessions make "Looking for ghosts…" slow.
+
+### What to try (M6)
+1. Train a bit on **Sprint** (New training), leave with Esc, then **Race yourself** → Sprint: the ghost list shows that session, newest
+   generation first. Click a few rows (latest, a much older one) and **Race**.
+2. Drive (W/S, A/D or arrows; a gamepad works too). The orange route is yours, the coloured ones are the ghosts'. At 25 / 50 / 75 % the split
+   table fills in: green − means you are ahead of that ghost.
+3. Drive into an orange danger cell (try Obstacle field): CRASHED; the ghosts keep going; **R** starts again with a 1 s countdown, at any time.
+4. Finish: the results list everyone with their times; the map shows all routes. **Race again (R)** or **Back (Esc)**.
+5. Save a copy of a track in the editor under another name: its ghosts still appear (same cells, same start); change one cell and
+   there are none. (Mixed-physics ghosts need two trainings with different physics settings; those come with M7's Settings screen.)
+6. Pick none: "Race alone" is the old Drive.
+7. **Please send back:** anything odd with the ghost list (a session missing, wrong times), ghosts that drift from your car at the start or at
+   slow frame rates, and the frame rate with 8 ghosts.
+
+## M7 — Settings and polish (2026-10-13)
+
+Done: the **Settings screen** (main menu, and over a running training with F2 / the HUD's Settings button), all PLAN §6.4 settings with
+kinds, tooltips, reset per setting and the Easy / Default / Chaos presets; the resource caps (threads, process priority, history
+memory); the FPS cap with VSync, the "75 Hz" hint and 15 FPS unfocused; graphics quality Low / High; three car models and three colour
+modes; the live **brain view**; interface clicks and the engine sound. Sim side (`src/Sim/Settings/`, all with tests): `SettingDef`
+(+ kind, type, scope), `SettingsCatalog` (the 39 settings), `AppSettings` (clamp, reset, presets, persistence, typed views),
+`SettingsPresets`, `MachineInfo`, `FpsCap`, `GraphicsQuality`, `EngineSound`, `CarPalette`; also `Brain/BrainProbe.cs`,
+`Evolution/PopulationResize.cs`, `Breeder.Parents`, and `TrainingHost.SetThreads / SetHistoryLimit / CopyBrain / CopyParents`,
+`ChangeSettings(…, populationSize)`, `TrainingHostOptions.Hidden1/Hidden2`, `Session.StartSegment(…, population)`, `Rebuilder` (resize at a
+segment boundary). App side: `app/Ui/SettingsScreen.cs`, `AppRuntime.cs`, `FrameRate.cs`, `PriorityPolicy.cs`, `Sfx.cs`;
+`app/View/BrainView.cs`, `EngineVoice.cs`; changed `CarRenderer`, `RouteOverlay`, `TrainingView`, `Hud`, `DriveView`, `RaceView`, `Main`,
+`MainMenu`, `UiTheme`. Sounds: `tools/make_audio.py` → `app/audio/click.wav`, `engine_loop.wav` (+ `.import`), listed in `CREDITS.md`.
+777 tests green (726 before: `SettingsTests` 42, `PopulationSizeTests` 9). SimVersion stays 2, no physics or default changed, every pinned
+hash unchanged (a test asserts the settings' defaults give exactly `new RacingSettings()` / `new EvolutionSettings()`).
+`dotnet build app` and `dotnet build tools/SimBench`: 0 warnings, 0 errors.
+
+### How each M7 point is met
+- **All §6.4 settings, kinds, tooltips, reset, presets.** `SettingsCatalog.Create(machine)` lists 39 settings, each a `SettingDef` (key, kind Live /
+  NewSegment / NewTraining, scope App / Training, type, default, range, step, tooltip). `AppSettings` clamps every value to its range and type, resets one
+  setting (`Reset`) or applies a preset (`ApplyPreset`), and exposes typed views (`Racing`, `Evolution`, `PopulationSize`, `Hidden1/2`, `VisualThreads`, …).
+  The Settings screen draws one row per setting: label (tooltip), control (check box / drop-down / spin box), kind badge (live / new segment /
+  new training), Reset. Tabs: Training (speed, evolution, population, car physics, sensors and brain), Graphics, Performance, Sound.
+  - *From the main menu* the training settings are the **defaults of the next new training** (`Main.Options` reads them; `--pop`, `--threads`, `--speed`,
+    `--history-mb`… still win), everything is saved as it changes.
+  - *Over a running training* (F2 or the HUD's "Settings (F2)"): the training settings show **that training's values** (`AppSettings.ForTraining`: the
+    session's evolution settings, the running segment's `RacingSettings`, its brain, the car count, the speed), so the screen never shows a stale default.
+    **Live** ones go to `TrainingHost.SetEvolution` / `SetSpeed` at once. **New segment** ones wait: "Start new segment…" lists them and asks (Modal, like the
+    M3 time-limit box), then `TrainingHost.ChangeSettings(racing, populationSize)` starts the segment at the next generation. A change set back to what
+    the training runs with drops out of the waiting list. **New training** ones are greyed out with "Start a new training to change this."
+  - *Presets*: Easy / Default / Chaos set every training-scope setting except the speed (`SettingsPresets.Overrides`); a setting a preset does not name
+    goes back to its default. Over a running training the new-training ones are skipped and the new-segment ones wait for the confirm.
+    Easy = direction hint on, 300 cars, 9 rays, elitism 10 %, σ 0.15, chance 8 %, random 1 %, grass 60 %, stall 4 s. Chaos = σ 0.5, chance 30 %, random
+    10 %, elitism 2 %, tournament 2, crossover 80 %, 100 cars, walls Kill, grass 30 %, grip 0.3, stall 2 s.
+  - *Persistence*: `settings.json` in the app data folder (`AppPaths.Settings`), `SettingsFile` (temp file + rename), only values that differ from the default are
+    written (a changed default reaches everyone who never touched the setting), choices are stored by name, unknown keys survive. A damaged file is kept as
+    `settings.json.bad` and the defaults are used.
+- **Resource caps.** `Simulation threads` (0 = auto = physical cores − 1 with visuals, logical − 1 without, 1…logical cores) and `Process priority` (Auto = Below
+  normal while training without visuals, else Normal / Normal / Below normal; `PriorityPolicy` over the M3 `CpuPriority`, Windows only) and `History memory limit` (MB,
+  default 1024, max = 75 % of the RAM from `GC.GetGCMemoryInfo`, 64 MB minimum; the tooltip says more memory does not make training faster). New host calls
+  `SetThreads(visual, headless)` and `SetHistoryLimit(bytes)` apply on the scheduler thread at once (the runner's thread count never changes a result; the history
+  is thinned to the new limit now). `TrainingView` pushes them when an app setting changed.
+- **FPS cap, VSync, hint, unfocused.** `FpsCap` (24 / 30 / 45 / 60 / 75 / 120 / Unlimited / Match monitor) → `FrameRate.Apply` sets `Engine.MaxFps` and the VSync mode;
+  the lowest of the cap, the progress screen's 10 FPS (now `FrameRate.Override`, replacing the saved/restored `Engine.MaxFps`) and 15 FPS while the window has no
+  focus (`NotificationApplicationFocusOut/In` in `Main`). The hint "75 Hz monitor: choose 75 (or Match monitor) or turn VSync off for smooth motion" shows under the
+  graphics rows when VSync is on and the cap is below the refresh rate without dividing it (`FpsCap.Hint`).
+- **Graphics.** `GraphicsQuality` Low (no route trail, no rays, plain lines, 200 cars) / High (trail, rays, anti-aliased lines, 1000 cars; the default). The
+  training view applies it each frame (`DrawRoute`), `CarRenderer.MaxDrawn` limits the cars written to the MultiMesh (the best and the selected car always are),
+  `RouteOverlay.Antialiased` the line smoothing.
+- **Car models and colours.** Three 18 × 11 pixel models in `CarRenderer` (Hatchback = the old one, Racer: low and pointed with a stripe and a rear wing, Truck:
+  cargo box behind a short cab), same hitbox. Colour modes: **Random** (HSV, S 0.6–0.9, V 0.8–1, per car index), **Per family** (a child keeps its parent's colour
+  with a hue shift of at most 0.04; elites keep it exactly; fresh random cars get a new one), **Single colour** (8 named colours). The family colours need to
+  know who bred whom: `Breeder` now records each child's parent A (`Parents`, −1 for a random car, `EliteCount`; no RNG draw moved), the host copies it at each
+  generation end (`CopyParents`), the view applies it when it sees the new generation (`CarRenderer.Inherit`, no allocation). After a fork, a resume, a resize or
+  when the view missed generations (at 100× or MAX) the colours simply stay. Ghost, player and replay-best cars keep their own colours. All views use the chosen model.
+- **Brain view.** `BrainView` (right edge, key B hides it): a circle per neuron by layer, a line per weight (orange +, blue −, thicker = stronger), the neurons
+  filled by the last tick's values. The host computes it on the scheduler thread for the watched car (`BrainProbe.Fill` = the cars' own `Mlp.Evaluate` on the
+  agent's last inputs) and the view copies it (`CopyBrain`): no data race, no extra sim cost for cars nobody watches. The weight lines are a child control that
+  redraws only when the car/generation/shape changed, so a frame draws the panel and the circles and allocates nothing.
+- **Sounds.** `tools/make_audio.py` synthesises both files (sines and an envelope; the engine loop is 1 s of a 55 Hz hum with a whole number of cycles, so it loops
+  without a seam). `Sfx` plays the click for every button (a `NodeAdded` hook in `Main`, once per button); `EngineVoice` plays `engine_loop.wav` with
+  `pitch = 0.8 + 1.2 × speed / max speed` for the followed car in the training view and for the player in Drive and Race, silent above 5× speed (`EngineSound.Audible`),
+  when paused, at MAX, while a replay or the progress screen is up, when the car is not running, and when the setting is off. Volumes are settings.
+
+### Decisions
+- **Population size is a real new-segment setting** (the plan's "trim worst / fill with mutants"). The bred population lists elites first and fresh random cars
+  last and carries no scores, so "worst" is not known at a boundary: `PopulationResize` keeps the first N genomes (the tail goes: random newcomers and the last
+  children) or adds mutated copies of the existing genomes in turn (the parameters that bred the population; own RNG stream per added car). It is deterministic, so a
+  rebuild reproduces it: `Rebuilder` resizes at the start of a stretch whose segment has another `PopulationSize` and once more for a target that is the first generation
+  of such a segment. `Session.StartSegment` takes the resized population as the current one. Tests: rebuild across two resizes, save → load → rebuild → fork (full and best-only).
+- Over a running training the training-scope rows show the training's own values; app-scope rows (graphics, performance, sound) are always the app's.
+  An edit of the app's defaults never changes a running session and vice versa.
+- "Start speed" is a Live training setting: from the menu it is the speed a new training starts at; over a training it sets the speed now.
+- Settings are numbers in the file where they are numbers; the three car models, the colour modes and the priority are stored by name. Percent settings are stored as
+  percent (elitism 5, not 0.05).
+- **Updates section left out on purpose**: APP-STANDARDS §2 wants it in Settings, but it belongs to the updater (check, banner, CHECK NOW, GET UPDATE) which is M8.
+- The brain view shows the followed car also when following the best (it follows the best car as that changes); a car the host has not caught up with yet keeps the
+  previous brain for one frame.
+- New debug `--do` verbs: `settings` (menu), `set:KEY=VALUE`, `preset:NAME`, `tab:N`, `scroll:Y`, `back` (Settings screen), `settings` / `settings-close` / `set` /
+  `segment-dialog` / `brain` / `engine` (training view), `focus:on|off`, `fps`; debug flag `--monitor-hz HZ` (a virtual screen reports no refresh rate).
+- `CpuInfo.VisualThreads()` was removed (the machine's default now lives in `MachineInfo`).
+
+### Checks (this Linux box, xvfb + llvmpipe, 1280×720, `NITROGENESIS_DATA` in /tmp; box shared with other builds, load 6–9)
+| Run | Result |
+|---|---|
+| menu → Settings, every tab | all rows draw; kind badges, resets, "auto (N)" text, the 75 Hz hint (`--monitor-hz 75`, cap 60, VSync on) |
+| `set:` values from the menu, quit, look at `settings.json` | only the changed values, choices by name (`"fpsCap": "75"`, `"priority": "Below normal"`, `"carModel": "Truck"`) |
+| training open, F2: σ 0.4 (live), rays (refused: locked), top speed + cars 80 (waiting), Low graphics, "Start new segment…" → confirm | the dialog lists the two waiting changes; segment 1 starts at the next generation with 80 (then 100 after the Chaos preset) cars; the view resized its buffers and kept drawing |
+| FPS: cap 30 → `Engine.MaxFps` 30; focus off → 15; progress screen (`trainto:100000`) → 10; Cancel → back to 30/60 | as the plan |
+| 3 car models, Single colour, Per family after 9 generations | models differ and read as cars; the family colours cluster by hue |
+| engine at 1× (best car at top speed) | sounding, pitch 2.00 = 0.8 + 1.2 × 18/18; at 25× or with the setting off: silent; `--drive … --autopilot`: pitch 1.58 at speed 11.7, 0 B per frame |
+| `--track s_curve --pop 300 --speed 100 --threads 3 --stats` (brain view on) | 60 FPS when the box allows (44–60 under the other load), **0 B per frame, render path 0.10 ms**, gc0 = 1 over 18 s (the sim threads' per-generation population copy, as noted in M3) |
+| presets on `hairpins` and `s_curve` (seed 1, `trainto-finish`) | Default, Easy and Chaos all train and finish within 2 generations (these tracks are easy) |
+Screenshots were kept in /tmp only and deleted. One more run: a saved session, cars 40 → 20 as a new segment at 25×, quit to the menu, Continue: resumes at the same generation with 20 cars and 2 segments.
+
+**SimBench (Release, s_curve; this box was loaded by another job, so only A/B against the committed HEAD in a temp worktree counts, alternating the order):**
+| | HEAD (M5) | M7 |
+|---|---|---|
+| `bench` 200 cars, 7 threads, median of 3 × 3 s, three rounds, base first | 4.92 / 4.58 / 4.17 M agent-ticks/s | 4.40 / 4.16 / 3.98 M |
+| the same, two more rounds with M7 first | 4.25 / 4.42 M | 4.51 / 5.07 M |
+| scaling run: 200 cars × 7 threads / 300 cars × 3 threads | 4.57, 3.96, 3.62 / 2.62, 2.47, 2.69 M | 4.53, 4.09, 4.10 / 2.36, 2.88, 2.44 M |
+| `view` (TrainingHost under a 60 Hz loop, 300 cars, 3 threads, 100×, warm 8 gens), three rounds | actual 100×, sim/frame median 1.36 / 1.67 / 1.69 ms, 0 late frames | actual 100×, 1.39 / 1.57 / 1.39 ms, 0 late frames |
+The difference between the two sides is smaller than the difference between rounds, and flips with the order: no regression. The tick loop was not touched; the
+host reads the watched car's brain only while a car is watched (302 weights and 22 inputs through one `Mlp.Evaluate` per frame).
+
+### Deviations
+- **Population size**: "trim worst" is "trim the tail" (see Decisions); the dialog says "the extra ones are dropped, or mutated copies of the population are added".
+- **No Updates section** (M8).
+- **Presets are not tuned.** They were run for learning on two easy tracks only; Easy / Chaos values are my picks (listed above) and a good first thing to adjust.
+- No Windows build / export was made (not asked for). The new scripts have their `.uid` files and the two sounds their `.import` files (`godot --headless --path app --import`).
+- The settings (spin boxes) show a percentage value as typed text "5 %"; there are no sliders (a spin box is exact, and a wheel over a slider scrolls the page).
+
+### Not proven
+- **Windows-only paths**: the process priority (no Windows here; on Linux it logs "left alone"), VSync (the virtual screen cannot change it: Godot warns "V-Sync not
+  supported"), the refresh-rate query (`DisplayServer.ScreenGetRefreshRate`; the hint was shown through `--monitor-hz`), and the **unfocused 15 FPS** driven by a real window
+  focus loss (tested through the debug `focus:off` step, which calls the same `FrameRate.SetFocused`).
+- **Hearing the sounds.** The audio driver is a dummy here: I checked that the click and the engine are played (counter, `Sounding`, pitch, volume), not how they sound. The
+  engine loop is a synthetic hum; its character is a guess. If the loop clicks or the pitch range sounds wrong, `tools/make_audio.py` is where to change it.
+- Frame rate with the brain view and 300 cars on the laptop (llvmpipe frame times mean nothing; the render path is 0.10 ms and allocation-free).
+- Easy / Chaos learning on the hard tracks (labyrinth, wrong turns); the preset values are untested there.
+- A long (hours) training whose history limit is lowered live: the thinning is the M3 code, only called sooner.
+
+### Review (Opus, 2026-10-13)
+Checked against PLAN §4, §5, §6.2, §6.4, §6.6, §2.1, §9: the resize as a segment, parent tracking (no RNG draw moved), `Rebuilder`,
+`Session.StartSegment`, the settings file and kinds, live threads/history limit on the scheduler thread, FPS cap/VSync/focus, brain view and
+engine (per-frame allocations, locking), node and event lifetimes. Old sessions: a session made with the committed M5 code (two segments, a
+full and a best-only fork, a branch switch) loads to the same fingerprint, rebuilds every generation of every branch bit for bit after thinning,
+and continues (3 generations + a full fork) to the same fingerprint as the M5 code. No file format changed; SimVersion and every pinned hash
+unchanged. Fixed:
+- **A full fork from the very generation where the number of cars grew rebuilt a different population** once snapshots were thinned
+  (silently for that generation, "not deterministic" for later ones): the added copies were drawn with the fork's seed, but that population
+  is the parent's. `Rebuilder` now takes the resize seed (and parameters) from the branch that bred the generation (`ResizeOwner`).
+- **A segment started just before leaving a branch** (a fork or switch before its first generation ended) stayed in the list, so after
+  switching back the branch trained on under the old settings while its generations were filed under the new segment (a later rebuild
+  failed or, with a resize, returned other cars). An M3 gap that the resize made worse: `Session.Activate` now drops the branch's segments
+  after its resume point (they never ran). `StartSegment` and `Activate` also refuse a population whose size does not fit the segment.
+- **A training resumed after a cars-only change diverged from the uninterrupted one**: the live run restarted the stagnation check at the
+  new segment, a resumed one replayed it from the last config change (same hash). A change of the number of cars now starts a new run like a
+  config change (`Session.SameRun`: divider, best time, stagnation; the Training panel lists it as its own segment), as the dialog promises.
+- A second "Start new segment…" (or the time-limit box) before the first change reached the generation boundary replaced it with the
+  running values (e.g. top speed set, then cars set: the top speed was lost; at 1× that window is up to a minute). The screen and the box now
+  start from the waiting change (`TrainingHost.PendingChange`).
+- A `settings.json` with a key twice (a hand edit) crashed the start (System.Text.Json throws `ArgumentException` lazily): now a damaged file
+  (`.bad`, defaults). VSync is only set when it changes (it ran at every focus change).
+- Tests: 781 green in Debug and Release (+4: the fork at a resize, the dropped segment, resume after a resize, exact float round trip of
+  a training's settings copy; the duplicate-key case added to an existing test). `dotnet build app` / `tools/SimBench` 0 warnings.
+  `learn-suite` passes (80.8 s). Under xvfb: menu Settings → `settings.json` (only changed values, choices by name); F2 over a 1× training: top
+  speed 22 + 60 cars confirmed, reopened before the boundary (shows 22 / 60), acceleration added and confirmed → one segment with all three,
+  divider, brain view, engine pitch 2.00 at 22/22; focus off 15 / on 60, progress screen 10, back to the cap 30; Continue of the resized
+  session; a race against ghosts of the 40-car segment.
+Left as they are (noted): quitting while the engine sounds prints "AudioStreamPlaybackWAV leaked" at exit (dummy audio driver here; stopping
+the player in `_ExitTree` did not change it; harmless); at 100×/MAX the family colours of a skipped generation are inherited from the last
+drawn one (cosmetic); a settings change still waiting at the boundary is not saved if you quit before it (as in M3).
+
+### What to try (M7)
+1. **Settings** in the main menu: look through the tabs, hover a row (tooltip), change something and press **Reset**. Start a **New training**: it uses your values (try Easy: the
+   HUD shows "HINT ON"). Quit and start again: the settings are still there.
+2. In a training press **F2**: change the mutation strength (it applies at once), then **Top speed** or **Cars per generation** and press "Start new segment…": confirm, and watch
+   the graph's orange divider and the Training panel's Segments tab. The grey rows (rays, hidden neurons…) need a new training.
+3. **Graphics**: cap 30 / 75 / unlimited (the HUD shows the cap); on a 75 Hz screen with cap 60 and VSync the hint appears; Low quality drops the route and rays.
+4. **Car model** and **Car colours** (try Per family over some generations: families get the same hue).
+5. Click a car: the **brain** appears on the right (B hides it); watch the neurons light as the car drives.
+6. **Sounds**: button clicks (switch off in Sound); an engine for the followed car at 1× (higher pitch when faster), nothing at 10× or MAX; drive it yourself in Race.
+7. **Performance**: threads 1 vs auto, "Process priority: Below normal" while training without visuals (Task Manager shows it), the history limit.
+8. **Please send back:** how the sounds feel, anything the Settings screen makes awkward, preset values you would change, and the frame rate with the brain view open.

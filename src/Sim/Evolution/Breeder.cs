@@ -20,16 +20,27 @@ namespace Nitrogenesis.Sim.Evolution;
 public sealed class Breeder
 {
     private readonly int[] _order;
+    private readonly int[] _parents;
     private readonly Xoshiro128StarStar _rng = new(0);
 
     public Breeder(int populationSize)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(populationSize, 1);
         _order = new int[populationSize];
+        _parents = new int[populationSize];
     }
 
     /// <summary>Genome indices of the last bred parents, best first.</summary>
     public ReadOnlySpan<int> Order => _order;
+
+    /// <summary>
+    /// For each child of the last <see cref="Breed"/>, the index (in the parent generation) of the parent it came from
+    /// (parent A of a crossover), or −1 for a fresh random genome. Only for the view (family colours); it changes no result.
+    /// </summary>
+    public ReadOnlySpan<int> Parents => _parents;
+
+    /// <summary>The first <see cref="EliteCount"/> children of the last <see cref="Breed"/> are unchanged copies of their parent.</summary>
+    public int EliteCount { get; private set; }
 
     public void Breed(Population parents, float[] scores, Population children, EvolutionParams p, ulong generationSeed, ReadOnlySpan<float> outputBias)
     {
@@ -45,13 +56,20 @@ public sealed class Breeder
         int elites = p.EliteCount(n);
         int firstRandom = n - p.RandomCount(n);
 
-        for (int c = 0; c < elites; c++) parents.Genome(_order[c]).CopyTo(children.Genome(c));
+        EliteCount = elites;
+        for (int c = 0; c < elites; c++)
+        {
+            parents.Genome(_order[c]).CopyTo(children.Genome(c));
+            _parents[c] = _order[c];
+        }
 
         for (int c = elites; c < firstRandom; c++)
         {
             _rng.Reseed(SeedHash.Derive(generationSeed, (ulong)c));
             Span<float> child = children.Genome(c);
-            ReadOnlySpan<float> a = parents.Genome(_order[Selection.Tournament(_rng, n, p.TournamentSize)]);
+            int parentA = _order[Selection.Tournament(_rng, n, p.TournamentSize)];
+            _parents[c] = parentA;
+            ReadOnlySpan<float> a = parents.Genome(parentA);
             if (_rng.NextFloat() < p.CrossoverRate)
             {
                 ReadOnlySpan<float> b = parents.Genome(_order[Selection.Tournament(_rng, n, p.TournamentSize)]);
@@ -67,6 +85,7 @@ public sealed class Breeder
         for (int c = firstRandom; c < n; c++)
         {
             _rng.Reseed(SeedHash.Derive(generationSeed, (ulong)c));
+            _parents[c] = -1;
             Genome.Randomize(children.Genome(c), children.Shape, outputBias, _rng);
         }
     }

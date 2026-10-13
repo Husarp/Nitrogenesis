@@ -19,7 +19,7 @@ namespace Nitrogenesis.View;
 public partial class Hud : CanvasLayer
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
-    private const string Hints = "−/+ speed   Space pause   . step   N next generation   M mode   T train to   R replay best   H panel   G graph";
+    private const string Hints = "−/+ speed   Space pause   . step   N next generation   M mode   T train to   R replay best   H panel   G graph   B brain   F2 settings";
     private const string Hints2 = "click a car: follow it   F follow best   wheel zoom   drag / WASD pan   F3 debug   Esc menu      Gamepad: LB / RB speed   A pause   X step   Back menu";
     /// <summary>Manual mutation slider: a factor 2^v on the default σ and chance, v = −2 … 2 in quarter steps (×0.25 … ×4).</summary>
     public const float MutationMinLog = -2f, MutationMaxLog = 2f, MutationStep = 0.25f;
@@ -44,7 +44,7 @@ public partial class Hud : CanvasLayer
 
     public GraphView Graph { get; } = new(300, false);
 
-    public event Action? BackPressed, PausePressed, StepPressed, ModePressed, NextGenerationPressed, TrainToPressed, ReplayBestPressed, PanelPressed;
+    public event Action? BackPressed, PausePressed, StepPressed, ModePressed, NextGenerationPressed, TrainToPressed, ReplayBestPressed, PanelPressed, SettingsPressed;
     /// <summary>The speed slider moved to a step index (0 … <see cref="SpeedController.MaxIndex"/>).</summary>
     public event Action<int>? SpeedPicked;
     /// <summary>The mutation slider moved: the new factor on σ and chance.</summary>
@@ -124,6 +124,9 @@ public partial class Hud : CanvasLayer
         _panel = UiTheme.SmallButton("Training panel  (H)", () => PanelPressed?.Invoke());
         _panel.TooltipText = "History, branches and segments";
         right.AddChild(_panel);
+        var settings = UiTheme.SmallButton("Settings  (F2)", () => SettingsPressed?.Invoke());
+        settings.TooltipText = "Evolution, car physics, graphics, performance and sound";
+        right.AddChild(settings);
         _saved = UiTheme.Label("", 13, UiTheme.Muted, HorizontalAlignment.Right);
         _saved.MouseFilter = Control.MouseFilterEnum.Pass;
         right.AddChild(_saved);
@@ -244,6 +247,14 @@ public partial class Hud : CanvasLayer
         box.AddChild(_mutationNote);
         UpdateMutationLabel(MathF.Pow(2f, initial));
         return box;
+    }
+
+    /// <summary>Shows a mutation factor changed elsewhere (the Settings screen) without sending it again.</summary>
+    public void SyncMutation(float factor)
+    {
+        float v = MathF.Round(MathF.Log2(Math.Clamp(factor, 0.25f, 4f)) / MutationStep) * MutationStep;
+        _mutation.SetValueNoSignal(v);
+        UpdateMutationLabel(MathF.Pow(2f, v));
     }
 
     /// <summary>Moves the mutation slider as a click would (debug <c>mutation</c> step).</summary>

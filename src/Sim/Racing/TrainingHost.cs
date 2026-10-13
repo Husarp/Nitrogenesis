@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using Nitrogenesis.Sim.Brain;
 using Nitrogenesis.Sim.Core;
 using Nitrogenesis.Sim.Evolution;
 using Nitrogenesis.Sim.History;
 using Nitrogenesis.Sim.Io;
 using Nitrogenesis.Sim.Map;
+using Nitrogenesis.Sim.Rng;
 
 namespace Nitrogenesis.Sim.Racing;
 
@@ -15,6 +17,10 @@ public sealed record TrainingHostOptions
     /// <summary>Simulation threads while training without visuals (PLAN §2.1: logical threads − 1); 0 = <see cref="Threads"/>.</summary>
     public int HeadlessThreads { get; init; }
     public int PopulationSize { get; init; } = EvolutionSettings.DefaultPopulationSize;
+    /// <summary>First hidden layer of a new training's brain (4…32).</summary>
+    public int Hidden1 { get; init; } = BrainShape.DefaultHidden;
+    /// <summary>Second hidden layer (4…32), or 0 for none.</summary>
+    public int Hidden2 { get; init; }
     public ulong Seed { get; init; } = 1;
     public RacingSettings Settings { get; init; } = new();
     public EvolutionSettings? Evolution { get; init; }
@@ -101,6 +107,8 @@ public struct TrainingStats
     public string? SaveError;
     /// <summary>Memory the history uses and its limit, bytes.</summary>
     public long HistoryBytes, HistoryLimit;
+    /// <summary>The watched car's forward speed (cells/s) and the top speed of the running segment, for the engine sound.</summary>
+    public float WatchedSpeed, MaxSpeed;
 }
 
 /// <summary>
@@ -139,7 +147,7 @@ public sealed class TrainingHost : IDisposable
     private readonly SpeedController _speed = new();
     private readonly SpeedMeter _meter = new();
     private readonly Track? _track;
-    private readonly TrainingHostOptions _options;
+    private TrainingHostOptions _options; // Threads, HeadlessThreads and HistoryMemoryLimit change while it runs (under _lock)
     private readonly Thread _thread;
     private readonly IDisposable? _folderLock;
     private volatile bool _stop;
@@ -154,6 +162,7 @@ public sealed class TrainingHost : IDisposable
     private readonly Queue<Action> _commands = new();
     private bool _headless, _cancelHeadless, _waitingForNext, _stepMode;
     private RacingSettings? _pendingSettings;
+    private int? _pendingPopulation;
     private CancellationTokenSource? _busyCancel;
     private int _trainToThreads;
     // Train-to requests are numbered when queued; a cancel drops every request queued up to then, also one the
@@ -166,6 +175,16 @@ public sealed class TrainingHost : IDisposable
     private bool _watchChanged;
     private float[] _trailX = Array.Empty<float>(), _trailY = Array.Empty<float>();
     private int _trailCount, _trailAgent = -1, _trailGeneration = -1;
+
+    // The watched car's brain (under _lock): its genome, and the inputs, hidden and output values of the last tick.
+    private float[] _brainValues = Array.Empty<float>(), _brainWeights = Array.Empty<float>();
+    private BrainShape _brainShape;
+    private int _brainAgent = -1, _brainGeneration = -1, _brainVersion;
+    private RacingTraining? _brainTraining;
+
+    // Who bred each car of the generation that begins (under _lock; for the family colours).
+    private int[] _parents = Array.Empty<int>();
+    private int _parentsGeneration = -1, _parentsElites;
 
     // Scheduler thread only.
     private double _agentTickSeconds = 2e-6; // running estimate of one agent-tick's cost (wall time), seconds
@@ -380,11 +399,48 @@ public sealed class TrainingHost : IDisposable
     /// them as a new segment (best time, stagnation and the graph baseline restart). Nothing happens when they give
     /// the same SimConfig.
     /// </summary>
-    public void ChangeSettings(RacingSettings settings)
+    public void ChangeSettings(RacingSettings settings, int? populationSize = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        lock (_lock) _pendingSettings = settings.Clamped();
+        lock (_lock)
+        {
+            _pendingSettings = settings.Clamped();
+            _pendingPopulation = populationSize is { } n ? Math.Max(1, n) : null;
+        }
     }
+
+    /// <summary>
+    /// The change <see cref="ChangeSettings"/> queued for the next generation boundary, or null: a second change before then
+    /// replaces it, so it should start from these values (else the first one would be lost).
+    /// </summary>
+    public (RacingSettings Settings, int? PopulationSize)? PendingChange
+    {
+        get
+        {
+            lock (_lock) return _pendingSettings is { } s ? (s, _pendingPopulation) : null;
+        }
+    }
+
+    /// <summary>
+    /// New "Simulation threads" (PLAN §4, a live setting): with visuals and without; 0 for <paramref name="headless"/> = the
+    /// same as <paramref name="visual"/>. Applies at once (results do not depend on the thread count).
+    /// </summary>
+    public void SetThreads(int visual, int headless) => Enqueue(() =>
+    {
+        lock (_lock) _options = _options with { Threads = Math.Max(1, visual), HeadlessThreads = Math.Max(0, headless) };
+        _training?.Runner.SetThreads(CurrentThreads());
+    });
+
+    /// <summary>New "History memory limit" (PLAN §4, a live setting): the history is thinned to it at once.</summary>
+    public void SetHistoryLimit(long bytes) => Enqueue(() =>
+    {
+        lock (_lock)
+        {
+            _options = _options with { HistoryMemoryLimit = bytes };
+            _stats.HistoryLimit = bytes;
+        }
+        _session?.SetMemoryLimit(bytes);
+    });
 
     /// <summary>
     /// Trains without visuals (PLAN §4) until <paramref name="condition"/> is met, at full speed with the headless
@@ -553,6 +609,63 @@ public sealed class TrainingHost : IDisposable
     }
 
     /// <summary>
+    /// Copies the watched car's brain (PLAN §6.2 "live brain view"): its genome into <paramref name="weights"/> and the values of
+    /// the last tick into <paramref name="values"/> (inputs, then each hidden layer, then outputs: <see cref="BrainProbe"/>).
+    /// Returns the number of values, 0 when there is none. <paramref name="version"/> changes when the car, generation or
+    /// shape changed (the genome is the same while it stays). Does not allocate when the arrays are big enough.
+    /// </summary>
+    public int CopyBrain(float[] values, float[] weights, out BrainShape shape, out int agent, out int generation, out int version)
+    {
+        lock (_lock)
+        {
+            shape = _brainShape;
+            agent = _brainAgent;
+            generation = _brainGeneration;
+            version = _brainVersion;
+            if (_brainAgent < 0 || values.Length < _brainValues.Length || weights.Length < _brainWeights.Length) return 0;
+            Array.Copy(_brainValues, values, _brainValues.Length);
+            Array.Copy(_brainWeights, weights, _brainWeights.Length);
+            return _brainValues.Length;
+        }
+    }
+
+    /// <summary>
+    /// Who bred each car of the generation <paramref name="generation"/> that just began (see <see cref="Breeder.Parents"/>), copied into
+    /// <paramref name="parents"/>. Returns the number of cars, 0 when it is not known (a fork, a resume, a resized population).
+    /// </summary>
+    public int CopyParents(int[] parents, out int generation, out int elites)
+    {
+        lock (_lock)
+        {
+            generation = _parentsGeneration;
+            elites = _parentsElites;
+            if (_parentsGeneration < 0 || parents.Length < _parents.Length) return 0;
+            Array.Copy(_parents, parents, _parents.Length);
+            return _parents.Length;
+        }
+    }
+
+    /// <summary>Scheduler thread, workers idle, under _lock: the watched car's genome and what its brain computed in the last tick.</summary>
+    private void ReadBrain(RacingTraining training, int agent)
+    {
+        var shape = training.Shape;
+        int generation = training.Runner.Generation, w = shape.WeightCount;
+        if (_brainAgent != agent || _brainGeneration != generation || _brainShape != shape || !ReferenceEquals(_brainTraining, training))
+        {
+            _brainAgent = agent;
+            _brainGeneration = generation;
+            _brainShape = shape;
+            _brainTraining = training;
+            _brainVersion++;
+        }
+        if (_brainWeights.Length != w) _brainWeights = new float[w];
+        int n = BrainProbe.ValueCount(shape);
+        if (_brainValues.Length != n) _brainValues = new float[n];
+        training.Runner.Brain.Weights.AsSpan(agent * w, w).CopyTo(_brainWeights);
+        BrainProbe.Fill(shape, _brainWeights, training.Mode.Inputs.AsSpan(agent * training.Mode.InputCount, training.Mode.InputCount), _brainValues);
+    }
+
+    /// <summary>
     /// Copies the graph of the active lineage (PLAN §6.2): best and average score per generation downsampled into
     /// <c>best.Length</c> buckets (<see cref="ScoreGraph.Sample"/>), the segment dividers, and how many generations the
     /// series covers. Returns the buckets used. Does not allocate.
@@ -660,7 +773,8 @@ public sealed class TrainingHost : IDisposable
         RacingTraining training;
         if (_session is null)
         {
-            training = new RacingTraining(_track!, _options.Settings, _options.Seed, _options.Evolution, _options.PopulationSize, _options.Threads);
+            training = new RacingTraining(_track!, _options.Settings, _options.Seed, _options.Evolution, _options.PopulationSize, _options.Threads,
+                _options.Hidden1, _options.Hidden2);
             var session = Session.Create(training.Config, _track!, _options.Seed, training.Runner.Settings, training.Runner.Population,
                 training.Runner.PopulationParams, _options.HistoryMemoryLimit);
             Volatile.Write(ref _session, session);
@@ -813,6 +927,14 @@ public sealed class TrainingHost : IDisposable
         var session = _session!;
         var runner = _training!.Runner;
         GenerationRecord record = runner.EndGeneration();
+        lock (_lock)
+        {
+            ReadOnlySpan<int> parents = runner.LastParents;
+            if (_parents.Length != parents.Length) _parents = new int[parents.Length];
+            parents.CopyTo(_parents);
+            _parentsGeneration = runner.Generation;
+            _parentsElites = runner.LastEliteCount;
+        }
         session.AddGeneration(record, runner.Population, runner.PopulationParams);
         if (record.Stats.BestFinishTicks < _bestTimeTicks) _bestTimeTicks = record.Stats.BestFinishTicks;
         bool boostStarted = runner.Stagnation.JustTriggered;
@@ -857,10 +979,13 @@ public sealed class TrainingHost : IDisposable
     private void ApplyPendingSettings()
     {
         RacingSettings? settings;
+        int? size;
         lock (_lock)
         {
             settings = _pendingSettings;
+            size = _pendingPopulation;
             _pendingSettings = null;
+            _pendingPopulation = null;
         }
         if (settings is null) return;
         var session = _session!;
@@ -874,15 +999,20 @@ public sealed class TrainingHost : IDisposable
             seed = session.Branch(current.Branch).Seed;
         }
         var brain = segment.Config.Brain;
-        var training = new RacingTraining(segment.Track, settings, seed, session.Evolution, current.Population.Size, CurrentThreads(),
-            brain.Hidden1, brain.Hidden2, current.Population, current.Generation, current.Params);
-        if (training.Config.Hash == segment.Config.Hash || training.Shape != brain)
+        // Another number of cars: the bred population is resized (trim the tail / add mutated copies), the same way a rebuild does it.
+        var population = current.Population;
+        int newSize = size ?? population.Size;
+        if (newSize != population.Size)
+            population = PopulationResize.To(population, newSize, current.Params, PopulationResize.SeedFor(SeedHash.Derive(seed, (ulong)current.Generation)));
+        var training = new RacingTraining(segment.Track, settings, seed, session.Evolution, newSize, CurrentThreads(),
+            brain.Hidden1, brain.Hidden2, population, current.Generation, current.Params);
+        if (training.Config.Hash == segment.Config.Hash && newSize == current.Population.Size || training.Shape != brain)
         {
             training.Dispose();
             if (training.Shape != brain) SetNotice("Those settings change the brain's inputs; start a new training to use them.");
             return;
         }
-        session.StartSegment(training.Config, segment.Track, current.Population.Size);
+        session.StartSegment(training.Config, segment.Track, newSize, newSize != current.Population.Size ? population : null);
         ReplaceTraining(training);
     }
 
@@ -953,6 +1083,7 @@ public sealed class TrainingHost : IDisposable
             _trailCount = 0;
             _trailAgent = -1;
             _watchChanged = true;
+            _parentsGeneration = -1; // a new training: nobody's parents known
         }
         Volatile.Write(ref _training, training);
         old?.Dispose();
@@ -1038,6 +1169,16 @@ public sealed class TrainingHost : IDisposable
                 _trailCount = 0;
                 _trailAgent = -1;
             }
+            if (watched >= 0 && watched < mode.AgentCount)
+            {
+                ReadBrain(training, watched);
+                _stats.WatchedSpeed = mode.Car(watched).ForwardSpeed;
+            }
+            else
+            {
+                _brainAgent = -1;
+            }
+            _stats.MaxSpeed = training.Track.Settings.MaxSpeed;
             _stats.Ready = ready;
             _stats.Generation = training.Runner.Generation;
             _stats.PopulationSize = mode.AgentCount;

@@ -46,6 +46,9 @@ public partial class RouteOverlay : Node2D
 
     public RouteOverlay() : this(RouteTrails.MaxSamplesPerCar + 1) { }
 
+    /// <summary>Anti-aliased route and ray lines (graphics quality High, PLAN §6.4).</summary>
+    public bool Antialiased { get; set; }
+
     /// <summary>Trail points, filled by the owner.</summary>
     public float[] TrailX { get; }
     public float[] TrailY { get; }
@@ -91,8 +94,8 @@ public partial class RouteOverlay : Node2D
             for (int i = 0; i < _trailCount; i++) points[i] = new Vector2(TrailX[i], TrailY[i]);
             Vector2 last = points[_trailCount - 1];
             for (int i = _trailCount; i < points.Length; i++) points[i] = last;
-            DrawPolyline(points, Shadow, 4f * _pixel);
-            DrawPolyline(points, _trailColor, 2f * _pixel);
+            DrawPolyline(points, Shadow, 4f * _pixel, Antialiased);
+            DrawPolyline(points, _trailColor, 2f * _pixel, Antialiased);
         }
 
         var car = new Vector2(_carX, _carY);
@@ -101,7 +104,7 @@ public partial class RouteOverlay : Node2D
         {
             var dir = new Vector2(_rayDx[r], _rayDy[r]);
             float wall = _wall[r], nonRoad = _nonRoad[r];
-            DrawLine(car, car + dir * wall, RayColor, -1f);
+            DrawLine(car, car + dir * wall, RayColor, -1f, Antialiased);
             if (nonRoad < wall) DrawRect(new Rect2(car + dir * nonRoad - mark / 2, mark), GrassMark);
             if (wall < _rayRange) DrawRect(new Rect2(car + dir * wall - mark / 2, mark), HitMark);
         }

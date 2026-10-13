@@ -57,14 +57,22 @@ internal sealed class SessionDriver : IDisposable
         return record;
     }
 
-    /// <summary>The population continues under other racing settings as a new segment (what the host does at a boundary).</summary>
-    public void ChangeSettings(RacingSettings settings)
+    /// <summary>
+    /// The population continues under other racing settings, and optionally another number of cars, as a new segment (what the
+    /// host does at a boundary).
+    /// </summary>
+    public void ChangeSettings(RacingSettings settings, int? populationSize = null)
     {
         var current = Session.Current;
         var segment = Session.SegmentAt(current.Branch, current.Generation);
-        var t = new RacingTraining(segment.Track, settings, Session.Branch(current.Branch).Seed, Session.Evolution, current.Population.Size, Threads,
-            segment.Config.Brain.Hidden1, segment.Config.Brain.Hidden2, current.Population, current.Generation, current.Params);
-        Session.StartSegment(t.Config, segment.Track, current.Population.Size);
+        ulong seed = Session.Branch(current.Branch).Seed;
+        var population = current.Population;
+        int size = populationSize ?? population.Size;
+        if (size != population.Size)
+            population = PopulationResize.To(population, size, current.Params, PopulationResize.SeedFor(Nitrogenesis.Sim.Rng.SeedHash.Derive(seed, (ulong)current.Generation)));
+        var t = new RacingTraining(segment.Track, settings, seed, Session.Evolution, size, Threads,
+            segment.Config.Brain.Hidden1, segment.Config.Brain.Hidden2, population, current.Generation, current.Params);
+        Session.StartSegment(t.Config, segment.Track, size, size != current.Population.Size ? population : null);
         Training.Dispose();
         Training = t;
     }

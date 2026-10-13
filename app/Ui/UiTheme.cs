@@ -130,6 +130,19 @@ public static class UiTheme
         t.SetColor("font_selected_color", "TabContainer", Colors.White);
         t.SetColor("font_unselected_color", "TabContainer", Muted);
         t.SetColor("font_hovered_color", "TabContainer", Text);
+        // M7: drop-down choices (the option button looks like a button; its list like the item list).
+        foreach (string state in new[] { "normal", "hover", "pressed", "disabled", "focus" }) t.SetStylebox(state, "OptionButton", t.GetStylebox(state, "Button"));
+        t.SetColor("font_color", "OptionButton", Text);
+        t.SetColor("font_hover_color", "OptionButton", Colors.White);
+        t.SetColor("font_pressed_color", "OptionButton", Colors.White);
+        t.SetColor("font_focus_color", "OptionButton", Colors.White);
+        t.SetColor("font_disabled_color", "OptionButton", Muted.Darkened(0.3f));
+        t.SetStylebox("panel", "PopupMenu", Box(Raised, Border, 1, 4, 4));
+        t.SetStylebox("hover", "PopupMenu", Box(Accent.Darkened(0.45f), Accent.Darkened(0.45f), 0, 6, 3));
+        t.SetColor("font_color", "PopupMenu", Text);
+        t.SetColor("font_hover_color", "PopupMenu", Colors.White);
+        t.SetColor("font_disabled_color", "PopupMenu", Muted.Darkened(0.3f));
+        t.SetConstant("v_separation", "PopupMenu", 8);
         t.SetStylebox("panel", "TooltipPanel", Box(Raised, Border, 1, 8, 5));
         t.SetColor("font_color", "TooltipLabel", Text);
         return t;

@@ -21,9 +21,13 @@ namespace Nitrogenesis.Sim.History;
 /// </remarks>
 public static class Rebuilder
 {
-    private sealed record Step(string Branch, ulong BranchSeed, int Generation, SegmentEntry Segment, HistoryEntry Evaluated, EvolutionParams BreedParams);
+    /// <param name="ResizeSeed">The <see cref="PopulationResize"/> seed of this generation (see <see cref="ResizeOwner"/>).</param>
+    private sealed record Step(string Branch, ulong BranchSeed, int Generation, SegmentEntry Segment, HistoryEntry Evaluated, EvolutionParams BreedParams, ulong ResizeSeed);
 
-    private sealed record Plan(Population Start, int StartGeneration, List<Step> Steps);
+    /// <summary>The target generation's segment has another number of cars than the bred population: <see cref="PopulationResize"/> with these.</summary>
+    private sealed record Resize(int Size, EvolutionParams Params, ulong Seed);
+
+    private sealed record Plan(Population Start, int StartGeneration, List<Step> Steps, Resize? TargetResize);
 
     /// <summary>Generations that must be re-evaluated to rebuild <paramref name="generation"/> (0 when a snapshot is at hand).</summary>
     public static int StepsNeeded(Session session, string branch, int generation) => MakePlan(session, branch, generation).Steps.Count;
@@ -45,6 +49,9 @@ public static class Rebuilder
         {
             // One runner per stretch of generations on the same branch and segment.
             var first = steps[i];
+            // A segment that changed the cars per generation starts with the resized population (the bred one is the old size).
+            if (first.Segment.PopulationSize > 0 && population.Size != first.Segment.PopulationSize)
+                population = PopulationResize.To(population, first.Segment.PopulationSize, first.Evaluated.Params, first.ResizeSeed);
             int j = i;
             while (j + 1 < steps.Count && steps[j + 1].Branch == first.Branch && steps[j + 1].Segment.Id == first.Segment.Id
                    && steps[j + 1].Generation == steps[j].Generation + 1)
@@ -81,6 +88,8 @@ public static class Rebuilder
             }
             i = j + 1;
         }
+        if (plan.TargetResize is { } resize && population.Size != resize.Size)
+            population = PopulationResize.To(population, resize.Size, resize.Params, resize.Seed);
         return population;
     }
 
@@ -90,7 +99,7 @@ public static class Rebuilder
         lock (session.SyncRoot)
         {
             if (!session.Compatibility.CanResimulate) throw new InvalidOperationException(session.Compatibility.Message);
-            string b = session.OwnerOf(branch, generation);
+            string b = session.OwnerOf(branch, generation), b0 = b;
             // A branch's first generation needs no record: its first population follows from the fork (or the seed), so a fork
             // that was made active and left again before it finished a generation can be switched back to.
             if (session.History.Get(b, generation) is null && !(session.Current.Branch == b && session.Current.Generation == generation)
@@ -146,11 +155,33 @@ public static class Rebuilder
                     throw new InvalidOperationException($"The record of generation {(entry is null ? g : g - 1)} of '{b}' is missing (a damaged history file), so generation {generation} cannot be rebuilt.");
                 if (entry.Seed != SeedHash.Derive(br.Seed, (ulong)g))
                     throw new InvalidOperationException($"Generation {g} of '{b}' has an unexpected seed.");
-                steps.Add(new Step(b, br.Seed, g - 1, session.SegmentAt(b, g - 1), previous, entry.Params));
+                steps.Add(new Step(b, br.Seed, g - 1, session.SegmentAt(b, g - 1), previous, entry.Params, ResizeSeed(session, ResizeOwner(session, b, g - 1), g - 1)));
                 g--;
             }
             steps.Reverse();
-            return new Plan(start, g, steps);
+            // The wanted generation is the first of a segment with another size: the last bred population needs the same resize.
+            Resize? resize = null;
+            var target = session.SegmentAt(b0, generation);
+            string owner = ResizeOwner(session, b0, generation);
+            var targetParams = session.History.Get(owner, generation)?.Params
+                               ?? (session.Current.Branch == owner && session.Current.Generation == generation ? session.Current.Params : (EvolutionParams?)null);
+            if (target.PopulationSize > 0 && targetParams is { } tp)
+                resize = new Resize(target.PopulationSize, tp, ResizeSeed(session, owner, generation));
+            return new Plan(start, g, steps, resize);
         }
     }
+
+    /// <summary>
+    /// The branch whose population of <paramref name="generation"/> was bred (and resized, if its segment changed the number of
+    /// cars there): <paramref name="branch"/> itself, except that a full fork's first population is its parent's.
+    /// </summary>
+    private static string ResizeOwner(Session session, string branch, int generation)
+    {
+        var br = session.Branch(branch);
+        while (br.Kind == ForkKind.Full && generation == br.FirstGeneration) br = session.Branch(br.Parent!);
+        return br.Name;
+    }
+
+    private static ulong ResizeSeed(Session session, string owner, int generation) =>
+        PopulationResize.SeedFor(SeedHash.Derive(session.Branch(owner).Seed, (ulong)generation));
 }

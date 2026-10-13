@@ -2,6 +2,8 @@ using System;
 using Godot;
 using Nitrogenesis.Sim.Core;
 using Nitrogenesis.Sim.Racing;
+using Nitrogenesis.Sim.Settings;
+using Nitrogenesis.Ui;
 
 namespace Nitrogenesis.View;
 
@@ -15,8 +17,10 @@ namespace Nitrogenesis.View;
 /// Per instance 16 floats: Transform2D (8), colour (4), custom (4; x = 1 for an outline, drawn as a silhouette in
 /// the instance colour). The pixel-art car texture marks tinted pixels with alpha ½; the shader multiplies those by
 /// the instance colour, which the shader takes in <c>vertex()</c> (in <c>fragment()</c> COLOR already carries the
-/// texel, which would darken the outline silhouette to the sprite's dark rim and tyres). Car colours: random HSV with S 0.6–0.9, V 0.8–1 (PLAN §6.2), fixed per car index for the
-/// view's lifetime, or one fixed colour.
+/// texel, which would darken the outline silhouette to the sprite's dark rim and tyres). Car colours (PLAN §6.2): random HSV
+/// with S 0.6–0.9, V 0.8–1 per car index, per family (<see cref="Inherit"/>: a child takes its parent's colour with a small hue
+/// shift) or one colour; a car given a fixed colour (the player, a ghost) keeps it. The look (one of three models, the colour
+/// mode, how many cars are drawn) comes from the app settings at <see cref="Setup"/> and <see cref="Restyle"/>.
 /// </remarks>
 public partial class CarRenderer : MultiMeshInstance2D
 {
@@ -48,8 +52,16 @@ void fragment() {
 
     private float[] _buffer = Array.Empty<float>();
     private float[] _colors = Array.Empty<float>();
+    private float[] _hue = Array.Empty<float>(), _sat = Array.Empty<float>(), _val = Array.Empty<float>();
+    private float[] _hue2 = Array.Empty<float>(), _sat2 = Array.Empty<float>(), _val2 = Array.Empty<float>();
     private int _count;
     private Rid _rid;
+    private ulong _seed;
+    private Color? _fixed;
+    private int _model = -1, _mode = -1, _single = -1;
+
+    /// <summary>Most cars drawn (the leader and the selected car always are); set by <see cref="Restyle"/> from the graphics quality.</summary>
+    public int MaxDrawn { get; set; } = int.MaxValue;
 
     /// <summary>Instances drawn in the last <see cref="Render"/> (cars plus the outline).</summary>
     public int Drawn { get; private set; }
@@ -62,16 +74,17 @@ void fragment() {
     public void Setup(int count, ulong colorSeed, Vector2 worldSize, Color? fixedColor = null)
     {
         _count = count;
+        _seed = colorSeed;
+        _fixed = fixedColor;
         _buffer = new float[(count + 2) * Floats]; // the cars plus two outlines
         _colors = new float[count * 3];
-        var rng = new Random((int)(colorSeed ^ (colorSeed >> 32)));
-        for (int i = 0; i < count; i++)
-        {
-            Color c = fixedColor ?? Color.FromHsv((float)rng.NextDouble(), 0.6f + 0.3f * (float)rng.NextDouble(), 0.8f + 0.2f * (float)rng.NextDouble());
-            _colors[i * 3] = c.R;
-            _colors[i * 3 + 1] = c.G;
-            _colors[i * 3 + 2] = c.B;
-        }
+        _hue = new float[count];
+        _sat = new float[count];
+        _val = new float[count];
+        _hue2 = new float[count];
+        _sat2 = new float[count];
+        _val2 = new float[count];
+        _mode = -1;
 
         var mm = new MultiMesh
         {
@@ -86,10 +99,94 @@ void fragment() {
         mm.InstanceCount = count + 2;
         mm.VisibleInstanceCount = 0;
         Multimesh = mm;
-        Texture = CarTexture();
         TextureFilter = TextureFilterEnum.Nearest;
         Material = new ShaderMaterial { Shader = new Shader { Code = ShaderCode } };
         _rid = mm.GetRid();
+        _model = -1;
+        Restyle();
+    }
+
+    /// <summary>
+    /// Takes the look from the app settings: the car model, the colour mode (cars with a fixed colour keep it) and the number of
+    /// cars drawn. Cheap when nothing changed; allocates only when the model changes.
+    /// </summary>
+    public void Restyle()
+    {
+        var settings = AppRuntime.Settings;
+        if (settings.CarModel != _model)
+        {
+            _model = settings.CarModel;
+            Texture = CarTexture(_model);
+        }
+        MaxDrawn = settings.Quality.MaxCarsDrawn;
+        if (_fixed is { } fixedColor)
+        {
+            if (_mode != CarPalette.SingleMode) SetAll(fixedColor);
+            _mode = CarPalette.SingleMode;
+            return;
+        }
+        int mode = settings.ColorMode, single = settings.CarColor;
+        if (mode == _mode && (mode != CarPalette.SingleMode || single == _single)) return;
+        _mode = mode;
+        _single = single;
+        if (mode == CarPalette.SingleMode)
+        {
+            var (_, r, g, b) = CarPalette.Singles[single];
+            SetAll(new Color(r, g, b));
+            return;
+        }
+        for (int i = 0; i < _count; i++)
+        {
+            CarPalette.Random(_seed, i, out _hue[i], out _sat[i], out _val[i]);
+            SetColor(i);
+        }
+    }
+
+    private void SetAll(Color c)
+    {
+        for (int i = 0; i < _count; i++)
+        {
+            _colors[i * 3] = c.R;
+            _colors[i * 3 + 1] = c.G;
+            _colors[i * 3 + 2] = c.B;
+        }
+    }
+
+    private void SetColor(int i)
+    {
+        Color c = Color.FromHsv(_hue[i], _sat[i], _val[i]);
+        _colors[i * 3] = c.R;
+        _colors[i * 3 + 1] = c.G;
+        _colors[i * 3 + 2] = c.B;
+    }
+
+    /// <summary>
+    /// Per-family colours (PLAN §6.2) for a new generation: child c takes the colour of <paramref name="parents"/>[c] (an index in
+    /// the generation before) with a small hue shift, unchanged for the first <paramref name="elites"/> children, and a fresh random
+    /// colour where the parent is −1. Does nothing in the other colour modes. Does not allocate.
+    /// </summary>
+    public void Inherit(int[] parents, int elites, int generation)
+    {
+        if (_mode != CarPalette.FamilyMode || _fixed is not null || parents.Length < _count) return;
+        Array.Copy(_hue, _hue2, _count);
+        Array.Copy(_sat, _sat2, _count);
+        Array.Copy(_val, _val2, _count);
+        ulong seed = Nitrogenesis.Sim.Rng.SeedHash.Derive(_seed, (ulong)generation);
+        for (int c = 0; c < _count; c++)
+        {
+            int p = parents[c];
+            if (p < 0 || p >= _count)
+            {
+                CarPalette.Random(seed, c, out _hue[c], out _sat[c], out _val[c]);
+            }
+            else
+            {
+                _hue[c] = c < elites ? _hue2[p] : CarPalette.ChildHue(_hue2[p], seed, c);
+                _sat[c] = _sat2[p];
+                _val[c] = _val2[p];
+            }
+            SetColor(c);
+        }
     }
 
     /// <summary>
@@ -105,6 +202,7 @@ void fragment() {
         for (int i = 0; i < _count; i++)
         {
             if (i == leader || i == selected || !IsShown(status[i])) continue;
+            if (n >= MaxDrawn) break; // the leader and the selected car are drawn below, in the two spare slots
             WriteCar(n++, i, x, y, angle);
         }
         if (selected >= 0)
@@ -168,26 +266,58 @@ void fragment() {
         return mesh;
     }
 
-    /// <summary>
-    /// 18 × 11 px car, nose to the right (≈ 6 px per cell like the map). Legend: '#' outline, 'b' body (tinted),
-    /// 'r' roof (tinted, darker), 'w' windscreen, 'q' rear window, 'h' headlight, 't' tail light, 'k' tyre.
-    /// </summary>
-    private static ImageTexture CarTexture()
+    // 18 × 11 px cars, nose to the right (≈ 6 px per cell like the map). Legend: '#' outline, 'b' body (tinted), 'r' roof or cargo
+    // (tinted, darker), 'w' windscreen, 'q' rear window, 'h' headlight, 't' tail light, 'k' tyre, 's' stripe, 'a' rear wing.
+    private static readonly string[][] Models =
+    [
+        [ // Hatchback
+            "...kkk.....kkk....",
+            ".################.",
+            "#tbbbbbbbbbbbbbbh#",
+            "#bbbqrrrrrrwwbbbb#",
+            "#bbbqrrrrrrwwbbbb#",
+            "#bbbqrrrrrrwwbbbb#",
+            "#bbbqrrrrrrwwbbbb#",
+            "#bbbqrrrrrrwwbbbb#",
+            "#tbbbbbbbbbbbbbbh#",
+            ".################.",
+            "...kkk.....kkk....",
+        ],
+        [ // Racer: low and pointed, with a rear wing and a stripe
+            "..kkkk......kkkk..",
+            "aa.###########....",
+            "aa#tbbbbbbbbbb###.",
+            "aa#bbbqrrwwbbbbbh#",
+            "aa#bbbqrrwwbbbbbh#",
+            "aa#ssssssssssssssh",
+            "aa#bbbqrrwwbbbbbh#",
+            "aa#bbbqrrwwbbbbbh#",
+            "aa#tbbbbbbbbbb###.",
+            "aa.###########....",
+            "..kkkk......kkkk..",
+        ],
+        [ // Truck: a tall cargo box behind a short cab
+            "..kkk......kkkk...",
+            ".################.",
+            "#trrrrrrrrr#bbbbh#",
+            "#rrrrrrrrrr#bwwwb#",
+            "#rrrrrrrrrr#bwwwb#",
+            "#rrrrrrrrrr#bwwwb#",
+            "#rrrrrrrrrr#bwwwb#",
+            "#rrrrrrrrrr#bwwwb#",
+            "#trrrrrrrrr#bbbbh#",
+            ".################.",
+            "..kkk......kkkk...",
+        ],
+    ];
+
+    private static readonly ImageTexture?[] ModelTextures = new ImageTexture?[Models.Length];
+
+    private static ImageTexture CarTexture(int model)
     {
-        string[] rows =
-        [
-            "...kkk.....kkk....",
-            ".################.",
-            "#tbbbbbbbbbbbbbbh#",
-            "#bbbqrrrrrrwwbbbb#",
-            "#bbbqrrrrrrwwbbbb#",
-            "#bbbqrrrrrrwwbbbb#",
-            "#bbbqrrrrrrwwbbbb#",
-            "#bbbqrrrrrrwwbbbb#",
-            "#tbbbbbbbbbbbbbbh#",
-            ".################.",
-            "...kkk.....kkk....",
-        ];
+        model = Math.Clamp(model, 0, Models.Length - 1);
+        if (ModelTextures[model] is { } cached) return cached;
+        string[] rows = Models[model];
         int w = rows[0].Length, h = rows.Length;
         var img = Image.CreateEmpty(w, h, false, Image.Format.Rgba8);
         for (int y = 0; y < h; y++)
@@ -204,11 +334,13 @@ void fragment() {
                     'h' => new Color(1f, 0.95f, 0.7f, 1f),
                     't' => new Color(0.8f, 0.15f, 0.12f, 1f),
                     'k' => new Color(0.1f, 0.1f, 0.1f, 1f),
+                    's' => new Color(0.92f, 0.92f, 0.95f, 1f),
+                    'a' => new Color(0.08f, 0.08f, 0.1f, 1f),
                     _ => new Color(0, 0, 0, 0),
                 };
                 img.SetPixel(x, y, c);
             }
         }
-        return ImageTexture.CreateFromImage(img);
+        return ModelTextures[model] = ImageTexture.CreateFromImage(img);
     }
 }

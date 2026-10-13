@@ -8,6 +8,7 @@ using Nitrogenesis.Sim.Evolution;
 using Nitrogenesis.Sim.History;
 using Nitrogenesis.Sim.Map;
 using Nitrogenesis.Sim.Racing;
+using Nitrogenesis.Sim.Settings;
 using Nitrogenesis.Ui;
 
 namespace Nitrogenesis.View;
@@ -60,6 +61,15 @@ public partial class TrainingView : Node2D
     private GraphView _bigGraph = null!;
     private ProgressScreen _progress = null!;
     private ReplayView? _replay;
+    private BrainView _brain = null!;
+    private EngineVoice _engine = null!;
+    private SettingsScreen? _settings;
+    private readonly float[] _brainValues = new float[160], _brainWeights = new float[2600];
+    private int[] _parents = [];
+    private int _colorGeneration = -1;
+    private bool _brainOn = true;
+    private int _appThreads, _appHeadlessThreads;
+    private long _appHistoryLimit;
 
     private readonly FrameAllocMeter _alloc = new();
     private long _hudTextBytes;
@@ -74,7 +84,7 @@ public partial class TrainingView : Node2D
     private bool _backRequested, _started;
 
     private State _state = State.Live;
-    private int _trainToRunsAtStart, _savedMaxFps = 60;
+    private int _trainToRunsAtStart;
     private bool _pausedBeforeReplay, _backgroundTraining, _panelBeforeHiding;
     private int _lastNotice, _lastBoost = -1;
     private string? _lastSaveError;
@@ -112,6 +122,12 @@ public partial class TrainingView : Node2D
         _cars = new CarRenderer();
         _cars.Setup(n, _colorSeed, new Vector2(_track.Grid.Width, _track.Grid.Height));
         AddChild(_cars);
+        _route.Antialiased = AppRuntime.Settings.Quality.AntiAliasedLines;
+        _parents = new int[n];
+        _engine = new EngineVoice();
+        AddChild(_engine);
+        (_appThreads, _appHeadlessThreads, _appHistoryLimit) = (AppRuntime.Settings.VisualThreads, AppRuntime.Settings.HeadlessThreads, AppRuntime.Settings.HistoryLimitBytes);
+        AppRuntime.Changed += OnAppSettingsChanged;
 
         _camera = new ViewCamera { Position = new Vector2(_track.Start.X, _track.Start.Y) };
         AddChild(_camera);
@@ -129,6 +145,7 @@ public partial class TrainingView : Node2D
         _hud.TrainToPressed += OpenTrainToDialog;
         _hud.ReplayBestPressed += ReplayLastBest;
         _hud.PanelPressed += TogglePanel;
+        _hud.SettingsPressed += OpenSettings;
         _hud.MutationPicked += SetMutation;
         AddChild(_hud);
         _hud.Graph.Clicked += () => ShowBigGraph(true);
@@ -151,6 +168,14 @@ public partial class TrainingView : Node2D
         var root = new Control { Theme = UiTheme.Theme, MouseFilter = Control.MouseFilterEnum.Ignore };
         root.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
         _ui.AddChild(root);
+
+        // The followed car's brain: the right edge, between the buttons and the graph.
+        _brain = new BrainView { Visible = false };
+        _brain.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopRight, Control.LayoutPresetMode.Minsize, 12);
+        _brain.OffsetTop = 176;
+        _brain.OffsetBottom = 426;
+        _brain.GrowHorizontal = Control.GrowDirection.Begin;
+        root.AddChild(_brain);
 
         // Step mode: the summary near the bottom centre.
         _summary = new StepSummary { Visible = false };
@@ -250,6 +275,7 @@ public partial class TrainingView : Node2D
     public override void _ExitTree()
     {
         long start = Stopwatch.GetTimestamp();
+        AppRuntime.Changed -= OnAppSettingsChanged;
         if (_state == State.Progress) LeaveProgress();
         _replay?.QueueFree();
         _host?.Dispose();
@@ -270,6 +296,7 @@ public partial class TrainingView : Node2D
             _started = true;
             _alloc.ResetCollections(); // count collections from the first generation on, not the set-up
         }
+        if (_state != State.Live) _engine.Update(false, 0, 1, 0);
         if (_state == State.Live)
         {
             if (_stats.Ready) DrawCars(delta);
@@ -360,7 +387,14 @@ public partial class TrainingView : Node2D
         long start = Stopwatch.GetTimestamp();
 
         var snapshots = _host.Snapshots;
-        if (snapshots is null || snapshots.Capacity != _curr.Capacity) return;
+        if (snapshots is null) return;
+        if (snapshots.Capacity != _curr.Capacity)
+        {
+            // A new segment with another number of cars: new buffers once, not the per-frame path.
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            ResizePopulation(snapshots.Capacity);
+            _alloc.Exclude(GC.GetAllocatedBytesForCurrentThread() - before);
+        }
         snapshots.CopyTo(_prev, _curr);
         int n = _curr.Capacity;
         Array.Copy(_x, _lastX, n);
@@ -373,6 +407,13 @@ public partial class TrainingView : Node2D
             _selected = -1;
             if (_camera.Mode == ViewCamera.CameraMode.FollowSelected) _camera.Mode = ViewCamera.CameraMode.FollowBest;
         }
+        if (_curr.GenerationId != _colorGeneration)
+        {
+            _colorGeneration = _curr.GenerationId;
+            // Family colours: the host kept who bred each car of this generation (nothing after a fork, a resume or a resize).
+            if (_host.CopyParents(_parents, out int parentsGeneration, out int elites) == _population && parentsGeneration == _colorGeneration)
+                _cars.Inherit(_parents, elites, _colorGeneration);
+        }
         int leader = _stats.Leader;
         _focus = _camera.Mode == ViewCamera.CameraMode.FollowBest ? leader : _selected;
         _host.Watch(_focus);
@@ -381,6 +422,8 @@ public partial class TrainingView : Node2D
         if (_focus >= 0) _camera.Follow(new Vector2(_x[_focus], _y[_focus]), _focus, _curr.GenerationId, delta,
             new Vector2(_x[_focus] - _lastX[_focus], _y[_focus] - _lastY[_focus]));
         DrawRoute(_focus);
+        UpdateBrain();
+        _engine.Update(_focus >= 0 && _curr.Status[_focus] == AgentStatus.Running, _stats.WatchedSpeed, _stats.MaxSpeed, _stats.Paused ? 0 : _stats.TargetSpeed);
 
         _renderMs = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
     }
@@ -394,8 +437,9 @@ public partial class TrainingView : Node2D
             _route.Show(0, default, _camera.WorldPerPixel);
             return;
         }
+        var quality = AppRuntime.Settings.Quality;
         int count = _host.CopyTrail(_route.TrailX, _route.TrailY, out int agent, out int generation);
-        if (agent != car || generation != _curr.GenerationId) count = 0; // the host has not caught up with the click yet
+        if (!quality.Trails || agent != car || generation != _curr.GenerationId) count = 0; // Low graphics, or the host has not caught up with the click yet
         else if (count < _route.TrailX.Length)
         {
             _route.TrailX[count] = _x[car];
@@ -403,11 +447,62 @@ public partial class TrainingView : Node2D
             count++;
         }
         Sensors? sensors = _host.Training?.Mode.Sensors;
-        if (sensors is not null && _curr.Status[car] == AgentStatus.Running)
+        if (quality.Rays && sensors is not null && _curr.Status[car] == AgentStatus.Running)
             _route.SetRays(sensors, _x[car], _y[car], (int)MathF.Round(_angle[car] / FastMath.RadiansPerUnit) & FastMath.AngleUnitsMask);
         else
             _route.ClearRays();
         _route.Show(count, _cars.CarColor(car), _camera.WorldPerPixel);
+    }
+
+    /// <summary>The brain of the followed car (PLAN §6.2), or hidden when nobody is followed, the car is not known yet, or B turned it off.</summary>
+    private void UpdateBrain()
+    {
+        if (!_brainOn || _focus < 0)
+        {
+            _brain.Visible = false;
+            return;
+        }
+        int n = _host.CopyBrain(_brainValues, _brainWeights, out var shape, out int agent, out int generation, out int version);
+        if (n == 0)
+        {
+            _brain.Visible = false; // nothing yet
+            return;
+        }
+        // While the host catches up with a new car (the best car changed, a click) the previous one stays for a frame.
+        if (version != _brainShown)
+        {
+            // New text and (rarely) new buffers when the followed car changes: not the render path (like the HUD text).
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            _brainShown = version;
+            _brainTitle = $"BRAIN · car {agent} · {shape.Inputs}→{shape.Hidden1}{(shape.Hidden2 > 0 ? "→" + shape.Hidden2 : "")}→{shape.Outputs}";
+            _brain.Visible = true;
+            _brain.Show(shape, version, _brainTitle, _brainValues, n, _brainWeights);
+            _alloc.Exclude(GC.GetAllocatedBytesForCurrentThread() - before);
+            return;
+        }
+        _brain.Visible = true;
+        _brain.Show(shape, version, _brainTitle, _brainValues, n, _brainWeights);
+    }
+
+    private int _brainShown = -1;
+    private string _brainTitle = "";
+
+    /// <summary>A new segment changed the number of cars: the buffers, the car drawing and the selection start over for the new size.</summary>
+    private void ResizePopulation(int n)
+    {
+        _population = n;
+        _cars.Setup(n, _colorSeed, new Vector2(_track.Grid.Width, _track.Grid.Height));
+        _prev = new AgentSnapshot(n);
+        _curr = new AgentSnapshot(n);
+        _x = new float[n];
+        _y = new float[n];
+        _angle = new float[n];
+        _lastX = new float[n];
+        _lastY = new float[n];
+        _parents = new int[n];
+        _colorGeneration = -1;
+        _selected = -1;
+        if (_camera.Mode == ViewCamera.CameraMode.FollowSelected) _camera.Mode = ViewCamera.CameraMode.FollowBest;
     }
 
     /// <summary>Selects the car nearest to a click (within its size, or 12 px when zoomed far out) and follows it.</summary>
@@ -540,13 +635,12 @@ public partial class TrainingView : Node2D
         ShowWorld(false);
         _progress.Visible = true;
         int threads = _options.HeadlessThreads > 0 ? _options.HeadlessThreads : _options.Threads;
-        bool lowered = CpuPriority.Lower();
+        bool lowered = PriorityPolicy.Apply(headless: true);
         _progress.Begin(condition, _stats.Generation,
-            $"{threads} simulation threads · process priority {(lowered ? "below normal" : "unchanged (" + CpuPriority.Why + ")")} · " +
+            $"{threads} simulation threads · process priority {(lowered ? "below normal" : "unchanged (" + (AppRuntime.Settings.Priority == SettingsCatalog.PriorityNormal ? "Settings: Normal" : CpuPriority.Why) + ")")} · " +
             (_saves ? "the session keeps saving every 2 minutes" : "this training is not saved"));
         _progress.Graph.Version = -1;
-        _savedMaxFps = Engine.MaxFps;
-        Engine.MaxFps = 10; // PLAN §4: the progress screen runs at about 10 FPS
+        FrameRate.Override = FpsCap.ProgressFps; // PLAN §4: the progress screen runs at about 10 FPS
     }
 
     private void LeaveProgress()
@@ -554,8 +648,8 @@ public partial class TrainingView : Node2D
         _state = State.Live;
         _progress.Visible = false;
         ShowWorld(true);
-        Engine.MaxFps = _savedMaxFps;
-        CpuPriority.Restore();
+        FrameRate.Override = 0;
+        PriorityPolicy.Apply(headless: false);
         _hud.Graph.Version = -1;
         _hudTimer = HudInterval;
     }
@@ -691,10 +785,76 @@ public partial class TrainingView : Node2D
     private void ConfirmTimeLimit(float seconds)
     {
         if (!CanControl || _host.Training?.Config.Mode is not RacingSettings settings || Modal.OpenCount > 0) return;
+        var pending = _host.PendingChange; // a change waiting for the boundary stays in (only the time limit differs)
+        if (pending is { } p) settings = p.Settings;
         string what = seconds > 0 ? $"{seconds:0.#} s" : "auto (reference time × 2.5)";
         Modal.Open(_ui, "New segment", Modal.Text($"From the next generation the time limit is {what}. That starts a new segment: the best time, the stagnation check and the graph restart there. The population carries on."),
             new Modal.Choice("Cancel"),
-            new Modal.Choice("Start new segment", () => _host.ChangeSettings(settings with { TimeLimitSeconds = seconds }), Primary: true));
+            new Modal.Choice("Start new segment", () => _host.ChangeSettings(settings with { TimeLimitSeconds = seconds }, pending?.PopulationSize), Primary: true));
+    }
+
+    // ---------------------------------------------------------------- settings
+
+    /// <summary>
+    /// The Settings screen over the running training (PLAN §6.4): its values come from this training, live ones apply at once,
+    /// new-segment ones after "Start new segment…", new-training ones are greyed out.
+    /// </summary>
+    private void OpenSettings()
+    {
+        if (_settings is not null || !CanControl || Modal.OpenCount > 0 || _host.Session is not { } session || _host.Training is not { } training) return;
+        EvolutionSettings evolution;
+        lock (session.SyncRoot) evolution = session.Evolution;
+        // A new segment confirmed before but not started yet (it waits for the generation boundary) shows as the training's values.
+        var pending = _host.PendingChange;
+        var working = AppSettings.ForTraining(AppRuntime.Machine, evolution, pending?.Settings ?? (RacingSettings)training.Config.Mode,
+            pending?.PopulationSize ?? _host.PopulationSize, training.Shape, _stats.TargetSpeed);
+        _settings = SettingsScreen.Create(working, TrainingSettingChanged, StartSegmentFrom);
+        _settings.Back += CloseSettings;
+        ((Control)_ui.GetChild(0)).AddChild(_settings);
+    }
+
+    private void CloseSettings()
+    {
+        if (_settings is null) return;
+        _settings.QueueFree();
+        _settings = null;
+        lock (_host.Session!.SyncRoot) _hud.SyncMutation(_host.Session.Evolution.MutationSigma / new EvolutionSettings().MutationSigma);
+        _hudTimer = HudInterval;
+    }
+
+    /// <summary>A live training setting changed on the Settings screen.</summary>
+    private void TrainingSettingChanged(AppSettings working, string key)
+    {
+        if (key == "speed") _host.SetSpeed(working.Speed);
+        else _host.SetEvolution(working.Evolution);
+    }
+
+    private void StartSegmentFrom(AppSettings working)
+    {
+        _host.ChangeSettings(working.Racing, working.PopulationSize);
+        _hud.ShowBanner("New segment: it starts with the next generation.", UiTheme.Accent, 6);
+    }
+
+    /// <summary>An app setting changed (FPS and VSync are applied by <see cref="AppRuntime"/>): threads, history memory, priority and the cars' look.</summary>
+    private void OnAppSettingsChanged()
+    {
+        var s = AppRuntime.Settings;
+        // Only what the user changed: a command-line flag (--threads…) keeps its value until its setting is touched.
+        if (s.VisualThreads != _appThreads || s.HeadlessThreads != _appHeadlessThreads)
+        {
+            (_appThreads, _appHeadlessThreads) = (s.VisualThreads, s.HeadlessThreads);
+            _options = _options with { Threads = s.VisualThreads, HeadlessThreads = s.HeadlessThreads };
+            _host.SetThreads(_options.Threads, _options.HeadlessThreads);
+        }
+        if (s.HistoryLimitBytes != _appHistoryLimit)
+        {
+            _appHistoryLimit = s.HistoryLimitBytes;
+            _options = _options with { HistoryMemoryLimit = s.HistoryLimitBytes };
+            _host.SetHistoryLimit(s.HistoryLimitBytes);
+        }
+        PriorityPolicy.Apply(headless: _state == State.Progress);
+        _cars.Restyle();
+        _route.Antialiased = s.Quality.AntiAliasedLines;
     }
 
     // ---------------------------------------------------------------- replays
@@ -801,7 +961,7 @@ public partial class TrainingView : Node2D
 
     public override void _UnhandledInput(InputEvent e)
     {
-        if (Modal.OpenCount > 0 || _state == State.Replay) return;
+        if (Modal.OpenCount > 0 || _state == State.Replay || _settings is not null) return;
         if (_state == State.Progress)
         {
             if (e is InputEventKey { Pressed: true, Keycode: Key.Escape })
@@ -874,6 +1034,12 @@ public partial class TrainingView : Node2D
                 break;
             case Key.G:
                 ShowBigGraph(true);
+                break;
+            case Key.B:
+                _brainOn = !_brainOn;
+                break;
+            case Key.F2:
+                OpenSettings();
                 break;
             case Key.F:
                 _camera.Mode = ViewCamera.CameraMode.FollowBest;
@@ -1049,6 +1215,20 @@ public partial class TrainingView : Node2D
             case "click-graph": ClickGraph(arg != "big"); break;
             case "key": { var k = OS.FindKeycodeFromString(arg); Input.ParseInputEvent(new InputEventKey { Keycode = k, PhysicalKeycode = k, Pressed = true }); } break;
             case "click-button": return ClickButton(arg);
+            case "settings": OpenSettings(); break;
+            case "settings-close": CloseSettings(); break;
+            case "set":
+            {
+                if (_settings is null) return "the settings screen is not open";
+                string[] kv = arg.Split('=', 2);
+                return kv.Length == 2 ? _settings.DebugSet(kv[0], kv[1]) : "set:KEY=VALUE";
+            }
+            case "preset": _settings?.DebugPreset(arg); break;
+            case "tab": _settings?.DebugTab(Int()); break;
+            case "scroll": _settings?.DebugScroll(Int()); break;
+            case "segment-dialog": _settings?.DebugStartSegment(); break;
+            case "brain": GD.Print($"brain visible={_brain.Visible} on={_brainOn} focus={_focus} selected={_selected}"); break;
+            case "engine": GD.Print($"engine sounding={_engine.Sounding} pitch={_engine.PitchScale:0.000} volumeDb={_engine.VolumeDb:0.0} speed={_stats.WatchedSpeed:0.0}/{_stats.MaxSpeed:0.0} target={_stats.TargetSpeed}"); break;
             default: return $"unknown step '{verb}'";
         }
         return null;

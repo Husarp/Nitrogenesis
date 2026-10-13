@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace Nitrogenesis.View;
 
-/// <summary>Physical core count, for the default simulation thread count with visuals (PLAN §2.1: physical cores − 1).</summary>
+/// <summary>Physical core count, for the default simulation thread count with visuals (PLAN §2.1: physical cores − 1; see <c>MachineInfo</c>).</summary>
 public static class CpuInfo
 {
     /// <summary>Physical cores of this machine; the logical processor count when it cannot be found.</summary>
@@ -22,9 +22,6 @@ public static class CpuInfo
         }
         return Environment.ProcessorCount;
     }
-
-    /// <summary>Simulation threads with visuals on: physical cores − 1, at least 1.</summary>
-    public static int VisualThreads() => Math.Max(1, PhysicalCores() - 1);
 
     private static int LinuxCores()
     {

@@ -17,8 +17,8 @@ namespace Nitrogenesis.View;
 /// <remarks>
 /// Per frame: read the devices once → <see cref="SpeedController"/> at 1× gives the due ticks → that many
 /// <see cref="PlayerRun.Tick"/>s → draw the car between the last two ticks (alpha = the tick fraction). The input
-/// of a frame applies to all of its ticks. Physics: the default racing settings (ghosts and their physics come
-/// with M6).
+/// of a frame applies to all of its ticks. Physics: the default racing settings (racing against ghosts is the
+/// <see cref="RaceView"/>, which shares this view's device reading).
 /// </remarks>
 public partial class DriveView : Node2D
 {
@@ -29,6 +29,7 @@ public partial class DriveView : Node2D
     private PlayerRun _run = null!;
     private readonly SpeedController _clock = new();
     private CarRenderer _car = null!;
+    private EngineVoice _engine = null!;
     private RouteOverlay _route = null!;
     private ViewCamera _camera = null!;
     private DriveHud _hud = null!;
@@ -48,6 +49,7 @@ public partial class DriveView : Node2D
     public PlayerRun Run => _run;
     public FrameAllocMeter Alloc => _alloc;
     public ViewCamera Camera => _camera;
+    public EngineVoice Engine => _engine;
 
     /// <summary>True when the drive was opened from the track editor: Esc and the button say "editor" instead of "menu" (the owner decides where Back goes).</summary>
     public bool BackToEditor { get; set; }
@@ -74,6 +76,8 @@ public partial class DriveView : Node2D
         _car = new CarRenderer { SelectedColor = UiTheme.Accent };
         _car.Setup(1, 0, new Vector2(_track.Grid.Width, _track.Grid.Height), PlayerColor);
         AddChild(_car);
+        _engine = new EngineVoice();
+        AddChild(_engine);
 
         _camera = new ViewCamera { Position = new Vector2(_track.Start.X, _track.Start.Y), UserZoom = DriveZoom };
         AddChild(_camera);
@@ -125,6 +129,7 @@ public partial class DriveView : Node2D
         _y[0] = prev.Y + (curr.Y - prev.Y) * alpha;
         _angle[0] = SnapshotInterpolation.LerpAngle(prev.Heading * FastMath.RadiansPerUnit, curr.Heading * FastMath.RadiansPerUnit, alpha);
         _car.Render(_x, _y, _angle, _status, -1, 0);
+        _engine.Update(_run.Phase == PlayerPhase.Driving, curr.ForwardSpeed, _run.Track.Settings.MaxSpeed, 1); // PLAN §6.6: the player's engine
         _camera.Follow(new Vector2(_x[0], _y[0]), 0, _run.Attempts, delta);
 
         int count = Math.Min(_run.TrailCount, _route.TrailX.Length - 1);
@@ -144,7 +149,7 @@ public partial class DriveView : Node2D
     /// Keyboard (physical WASD positions and the arrows) and the first gamepad (left stick, triggers). Reading
     /// device 0 directly gives zeros when no pad is connected, and allocates nothing.
     /// </summary>
-    private static void ReadDevices(out int keyThrottle, out int keySteer, out float stickX, out float rightTrigger, out float leftTrigger)
+    internal static void ReadDevices(out int keyThrottle, out int keySteer, out float stickX, out float rightTrigger, out float leftTrigger)
     {
         keyThrottle = (Held(Key.W, Key.Up) ? 1 : 0) - (Held(Key.S, Key.Down) ? 1 : 0);
         keySteer = (Held(Key.D, Key.Right) ? 1 : 0) - (Held(Key.A, Key.Left) ? 1 : 0);

@@ -384,14 +384,14 @@ public partial class TrainingPanel : PanelContainer
     private void ShowSegments(List<SegmentRow> segments, SegmentEntry current)
     {
         foreach (Node child in _segmentsBox.GetChildren()) child.QueueFree();
-        string? previousHash = null;
+        SegmentEntry? previous = null;
         foreach (var (segment, from) in segments)
         {
             var s = (RacingSettings)segment.Config.Mode;
             bool isCurrent = segment.Id == current.Id;
             // A fork starts its own segment entry; with the same settings it goes on with the same run (no divider).
-            bool sameRun = segment.Config.Hash == previousHash;
-            previousHash = segment.Config.Hash;
+            bool sameRun = previous is not null && Session.SameRun(segment, previous);
+            previous = segment;
             if (sameRun)
             {
                 // A fork starts its own segment entry, but with the same settings it is not a new segment for the user: a note, not a block.

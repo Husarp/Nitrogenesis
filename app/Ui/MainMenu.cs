@@ -7,14 +7,13 @@ using Nitrogenesis.Sim.Io;
 namespace Nitrogenesis.Ui;
 
 /// <summary>
-/// The main menu (PLAN §6.1): New training · Continue (last session) · Sessions · Track editor · Drive · Settings · Quit.
-/// Settings (M7) is shown but not available yet.
+/// The main menu (PLAN §6.1): New training · Continue (last session) · Sessions · Track editor · Race yourself · Settings · Quit.
 /// </summary>
 public partial class MainMenu : Control
 {
     private SessionInfo? _latest;
 
-    public event Action? NewTraining, Continue, Sessions, Drive, Editor;
+    public event Action? NewTraining, Continue, Sessions, Race, Editor, Settings;
 
     /// <param name="latest">The session "Continue" opens (the one saved last), or null.</param>
     public static MainMenu Create(SessionInfo? latest) => new() { _latest = latest };
@@ -65,14 +64,14 @@ public partial class MainMenu : Control
         editor.TooltipText = "Draw and edit tracks";
         box.AddChild(editor);
 
-        var drive = MenuButton("Drive");
-        drive.Pressed += () => Drive?.Invoke();
-        drive.TooltipText = "Drive a track yourself";
-        box.AddChild(drive);
+        var race = MenuButton("Race yourself");
+        race.Pressed += () => Race?.Invoke();
+        race.TooltipText = "Drive a track yourself, alone or against the best cars of your saved trainings";
+        box.AddChild(race);
 
         var settings = MenuButton("Settings");
-        settings.Disabled = true;
-        settings.TooltipText = "Comes in a later version (M7)";
+        settings.TooltipText = "Training defaults, graphics, performance and sound";
+        settings.Pressed += () => Settings?.Invoke();
         box.AddChild(settings);
 
         var quit = MenuButton("Quit");

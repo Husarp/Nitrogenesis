@@ -95,6 +95,12 @@ public sealed class GenerationRunner : IDisposable
     /// <summary>The renderer's view (published at every <see cref="RunTicks"/> end and at the generation start).</summary>
     public SnapshotBuffer Snapshots { get; }
 
+    /// <summary>Who bred each car of the current <see cref="Population"/> (see <see cref="Breeder.Parents"/>); meaningless for generation 0 of a run.</summary>
+    public ReadOnlySpan<int> LastParents => _breeder.Parents;
+
+    /// <summary>How many of the first cars are unchanged copies of their parent (see <see cref="Breeder.EliteCount"/>).</summary>
+    public int LastEliteCount => _breeder.EliteCount;
+
     /// <summary>Stagnation detection and the mutation boost (reset it when a new segment starts).</summary>
     public StagnationTracker Stagnation { get; } = new();
 
